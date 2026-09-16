@@ -1,0 +1,23 @@
+services:
+  status-visualizer:
+    build:
+      context: .
+    image: status-visualizer:local
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${STATUS_VISUALIZER_BIND:-127.0.0.1}:${STATUS_VISUALIZER_PORT:-8092}:8092"
+    volumes:
+      - status-visualizer-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  status-visualizer-data:

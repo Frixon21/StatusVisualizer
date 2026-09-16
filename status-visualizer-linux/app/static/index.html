@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Network Topology</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="app-shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">NT</div>
+      <div><h1>Network Topology</h1><p>Lantopolog inventory and topology editor</p></div>
+    </div>
+    <div class="topbar-actions">
+      <span id="import-state" class="service-state"><i></i><span>No export imported</span></span>
+      <button id="theme-toggle" class="button button-secondary theme-toggle" type="button" aria-pressed="false" aria-label="Switch to light mode">Light mode</button>
+      <input id="import-folder" type="file" webkitdirectory directory multiple hidden>
+      <button id="check-liveness" class="button button-secondary" type="button">Check status</button>
+      <button id="import-button" class="button button-primary" type="button">Import Lantopolog</button>
+      <button id="connect-button" class="button button-secondary" type="button" aria-pressed="false">Connect nodes</button>
+      <button id="add-button" class="button button-secondary" type="button">Add node</button>
+      <button id="clear-nodes" class="button button-danger" type="button">Clear nodes</button>
+    </div>
+  </header>
+
+  <section class="stats-bar" aria-label="Topology summary">
+    <div class="stat"><strong id="stat-total">0</strong><span>Nodes</span></div>
+    <div class="stat"><strong id="stat-infrastructure">0</strong><span>Infrastructure</span></div>
+    <div class="stat"><strong id="stat-endpoints">0</strong><span>Endpoints</span></div>
+    <div class="stat"><strong id="stat-connections">0</strong><span>Connections</span></div>
+    <div class="stat"><strong id="stat-vlans">0</strong><span>VLANs</span></div>
+    <div class="scan-summary"><span id="import-summary">Select one Lantopolog Export folder</span><strong id="refresh-time">—</strong></div>
+  </section>
+
+  <main id="workspace" class="workspace">
+    <aside id="inventory-panel" class="inventory-panel">
+      <div class="inventory-header">
+        <div class="inventory-title-row">
+          <h2>Inventory</h2>
+          <button id="toggle-inventory" class="icon-button" type="button" aria-controls="inventory-panel" aria-expanded="true" aria-label="Collapse inventory" title="Collapse inventory">‹</button>
+        </div>
+        <div class="inventory-controls">
+          <div class="inventory-search">
+            <input id="node-search" type="search" placeholder="Search name, IP, MAC or vendor" aria-label="Search inventory">
+            <button id="focus-search" class="text-button" type="button" title="Focus the first matching device">Focus</button>
+          </div>
+          <div class="filter-row" role="group" aria-label="Inventory filter">
+            <button class="filter-button is-active" type="button" data-filter="all">All</button>
+            <button class="filter-button" type="button" data-filter="infrastructure">Infrastructure</button>
+            <button class="filter-button" type="button" data-filter="endpoint">Endpoints</button>
+            <button class="filter-button" type="button" data-filter="manual">Manual</button>
+          </div>
+        </div>
+      </div>
+      <div id="inventory-list" class="inventory-list"></div>
+    </aside>
+
+    <section class="graph-panel">
+      <div class="graph-toolbar">
+        <div><strong>Editable topology</strong><span id="mode-hint">Pan the canvas or drag nodes to arrange them</span></div>
+        <div class="toolbar-actions">
+          <div class="tool-toggle" role="group" aria-label="Canvas tool">
+            <button id="pan-tool" class="text-button is-active" type="button" aria-pressed="true">Pan</button>
+            <button id="box-select-tool" class="text-button" type="button" aria-pressed="false">Box select</button>
+          </div>
+          <button id="snap-grid" class="text-button" type="button" aria-pressed="false">Snap grid: Off</button>
+          <button id="vlan-view" class="text-button" type="button" aria-pressed="true">VLAN view: On</button>
+          <details id="arrange-options" class="toolbar-menu" aria-label="Arrangement options">
+            <summary class="text-button">Arrange</summary>
+            <div class="toolbar-menu-panel arrange-menu-panel">
+              <strong>Automatic layouts</strong>
+              <div class="arrange-actions">
+                <button id="arrange-hierarchy" class="text-button" type="button">Arrange hierarchy</button>
+                <button id="arrange-switch" class="text-button" type="button">Arrange by switch</button>
+                <button id="arrange-vlan" class="text-button" type="button">Arrange by VLAN</button>
+                <button id="arrange-subnet" class="text-button" type="button">Arrange by subnet</button>
+              </div>
+              <strong class="menu-section-title">Custom arrangement</strong>
+              <div class="arrange-actions custom-arrange-actions">
+                <button id="save-custom-arrangement" class="text-button" type="button">Save current</button>
+                <button id="restore-custom-arrangement" class="text-button" type="button">Restore saved</button>
+              </div>
+            </div>
+          </details>
+          <details id="display-options" class="toolbar-menu" aria-label="Display options">
+            <summary class="text-button">Display</summary>
+            <div class="toolbar-menu-panel">
+              <strong>Show device types</strong>
+              <div class="display-type-grid">
+                <label><input type="checkbox" data-display-type="router" checked> Routers</label>
+                <label><input type="checkbox" data-display-type="switch" checked> Switches</label>
+                <label><input type="checkbox" data-display-type="access-point" checked> Access points</label>
+                <label><input type="checkbox" data-display-type="server" checked> Servers</label>
+                <label><input type="checkbox" data-display-type="workstation" checked> Workstations</label>
+                <label><input type="checkbox" data-display-type="printer" checked> Printers</label>
+                <label><input type="checkbox" data-display-type="phone" checked> Phones</label>
+                <label><input type="checkbox" data-display-type="other" checked> Other / unknown</label>
+              </div>
+              <label class="display-option"><input id="hide-manual" type="checkbox"> Hide manually added devices</label>
+              <label class="display-label-mode"><span>Node labels</span>
+                <select id="label-mode">
+                  <option value="hostname">Hostname</option>
+                  <option value="ip">IP address</option>
+                  <option value="both" selected>Hostname + IP</option>
+                </select>
+              </label>
+              <div class="display-actions">
+                <button id="collapse-unmanaged" class="text-button" type="button">Collapse unmanaged groups</button>
+                <button id="expand-unmanaged" class="text-button" type="button">Expand all groups</button>
+              </div>
+            </div>
+          </details>
+          <button id="print-topology" class="text-button" type="button">Save diagram PDF</button>
+          <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out">−</button>
+          <span id="zoom-label">100%</span>
+          <button id="zoom-in" class="icon-button" type="button" aria-label="Zoom in">+</button>
+          <button id="zoom-fit" class="text-button" type="button">Fit</button>
+        </div>
+      </div>
+      <div id="graph-viewport" class="graph-viewport" aria-label="Interactive network topology">
+        <div id="graph-stage" class="graph-stage">
+          <div id="vlan-layer" class="vlan-layer" aria-hidden="true"></div>
+          <svg id="edge-layer" class="edge-layer" viewBox="0 0 1800 1100" aria-label="Network connections"></svg>
+          <div id="node-layer" class="node-layer"></div>
+        </div>
+        <div id="selection-box" class="selection-box" hidden></div>
+        <div id="vlan-legend" class="vlan-legend" aria-label="VLAN color legend" hidden></div>
+        <div id="graph-empty" class="graph-empty">
+          <div class="empty-symbol">⌁</div>
+          <h2 id="graph-empty-title">No topology imported yet</h2>
+          <p id="graph-empty-message">Select the Lantopolog <strong>Export</strong> folder once. All useful CSV and XML files are imported together.</p>
+          <button id="empty-import" class="button button-primary" type="button">Import Export folder</button>
+        </div>
+      </div>
+      <footer class="graph-footer">
+        <span><i class="legend online"></i>Online</span>
+        <span><i class="legend offline"></i>No ping reply</span>
+        <span><i class="legend unknown"></i>Not checked</span>
+        <span class="graph-note">Solid links are imported · dashed links are manually added</span>
+      </footer>
+    </section>
+
+    <aside id="detail-panel" class="detail-panel" hidden><div id="detail-content"></div></aside>
+  </main>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+</div>
+<script src="/static/topology-utils.js" defer></script>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

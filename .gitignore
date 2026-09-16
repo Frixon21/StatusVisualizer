@@ -1,0 +1,14 @@
+# Runtime state
+data/
+.env
+.env.*
+
+# Python/build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/

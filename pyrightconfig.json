@@ -1,0 +1,16 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic",
+  "include": [
+    "app/models.py",
+    "app/config.py",
+    "app/database.py",
+    "app/lantopolog.py",
+    "app/lantopolog_store.py",
+    "app/liveness.py",
+    "app/network.py",
+    "app/main.py",
+    "run.py"
+  ]
+}

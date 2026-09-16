@@ -1,0 +1,5 @@
+-r requirements.txt
+httpx>=0.28,<1
+pyinstaller>=6.11,<7
+pypdf>=5,<7
+pytest>=8.3,<9
