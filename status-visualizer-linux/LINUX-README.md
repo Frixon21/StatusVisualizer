@@ -142,3 +142,7 @@ python3 -m venv .venv
 python -m pip install -r requirements.txt
 python run.py --host 0.0.0.0 --port 8092 --data-dir ./data
 ```
+
+## Tech expo multi-network deployment
+
+For the optional port-6042 launcher with isolated flat, compartmentalized, and live topology instances, first complete the native systemd install using `/srv/StatusVisualizer`, then follow `EXPO-RUNBOOK.md`.

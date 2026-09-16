@@ -150,6 +150,16 @@ def test_generated_linux_folder_is_complete_and_contains_no_local_state() -> Non
         "scripts/install-linux.sh",
         "scripts/uninstall-linux.sh",
         "scripts/status-visualizer.service.template",
+        "expo_launcher.py",
+        "expo-launcher/index.html",
+        "expo-launcher/launcher.js",
+        "expo-launcher/networks.json",
+        "expo-launcher/styles.css",
+        "EXPO-RUNBOOK.md",
+        "scripts/install-expo-linux.sh",
+        "scripts/uninstall-expo-linux.sh",
+        "scripts/status-visualizer@.service.template",
+        "scripts/status-visualizer-launcher.service.template",
     }
     packaged_files = {
         path.relative_to(package).as_posix()

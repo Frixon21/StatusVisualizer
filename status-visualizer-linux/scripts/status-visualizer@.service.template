@@ -1,0 +1,41 @@
+[Unit]
+Description=Status Visualizer topology (%i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=status-visualizer
+Group=status-visualizer
+WorkingDirectory=@@INSTALL_DIR@@
+EnvironmentFile=@@ENV_DIR@@/%i.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@@INSTALL_DIR@@/.venv/bin/python @@INSTALL_DIR@@/run.py --host 0.0.0.0 --port ${PORT} --data-dir @@DATA_ROOT@@/%i
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=@@DATA_ROOT@@/%i
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

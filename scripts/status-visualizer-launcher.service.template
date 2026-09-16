@@ -1,0 +1,39 @@
+[Unit]
+Description=Status Visualizer tech expo launcher
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=status-visualizer
+Group=status-visualizer
+WorkingDirectory=@@INSTALL_DIR@@
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@@INSTALL_DIR@@/.venv/bin/python @@INSTALL_DIR@@/expo_launcher.py --host 0.0.0.0 --port 6042
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

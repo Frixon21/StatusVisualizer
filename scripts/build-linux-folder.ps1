@@ -26,14 +26,20 @@ New-Item -ItemType Directory -Path (Join-Path $OutputFullPath "scripts") | Out-N
 
 $files = @(
     "run.py",
+    "expo_launcher.py",
     "requirements.txt",
     "Dockerfile",
     "compose.yaml",
     "README.md",
     "LINUX-README.md",
+    "EXPO-RUNBOOK.md",
     "scripts/install-linux.sh",
+    "scripts/install-expo-linux.sh",
     "scripts/uninstall-linux.sh",
-    "scripts/status-visualizer.service.template"
+    "scripts/uninstall-expo-linux.sh",
+    "scripts/status-visualizer.service.template",
+    "scripts/status-visualizer@.service.template",
+    "scripts/status-visualizer-launcher.service.template"
 )
 
 foreach ($relativePath in $files) {
@@ -49,6 +55,10 @@ foreach ($relativePath in $files) {
 $appTarget = Join-Path $OutputFullPath "app"
 New-Item -ItemType Directory -Path $appTarget | Out-Null
 Copy-Item -Path (Join-Path $ProjectRoot "app\*") -Destination $appTarget -Recurse -Force
+
+$launcherTarget = Join-Path $OutputFullPath "expo-launcher"
+New-Item -ItemType Directory -Path $launcherTarget | Out-Null
+Copy-Item -Path (Join-Path $ProjectRoot "expo-launcher\*") -Destination $launcherTarget -Recurse -Force
 
 $excludedRuntimeJunk = @(
     "__pycache__",
