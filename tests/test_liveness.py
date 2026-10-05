@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.database import Repository
 from app.liveness import (
+    IcmpProbe,
     LivenessService,
     ProbeOutcome,
     canonical_probe_address,
@@ -275,3 +276,149 @@ def test_liveness_post_requires_a_small_declared_json_body(tmp_path) -> None:
 def test_liveness_settings_are_bounded(changes, message) -> None:
     with pytest.raises(ValueError, match=message):
         Settings(**changes)
+
+
+def test_icmp_probe_reports_unknown_when_subprocess_cannot_start(monkeypatch) -> None:
+    async def fail_to_start(*_args, **_kwargs):
+        raise OSError("ping unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_to_start)
+
+    assert asyncio.run(IcmpProbe().check("192.168.1.10", 0.1)) == ProbeOutcome(
+        "unknown", None
+    )
+
+
+def test_icmp_probe_kills_a_timed_out_subprocess(monkeypatch) -> None:
+    class HangingProcess:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.killed = False
+
+        async def wait(self) -> int:
+            if self.killed:
+                return -9
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = HangingProcess()
+
+    async def create_process(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+
+    assert asyncio.run(IcmpProbe().check("192.168.1.10", 0.1)) == ProbeOutcome(
+        "offline", None
+    )
+    assert process.killed is True
+
+
+def test_icmp_probe_kills_subprocess_and_propagates_cancellation(monkeypatch) -> None:
+    class HangingProcess:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.killed = False
+
+        async def wait(self) -> int:
+            self.started.set()
+            if self.killed:
+                return -9
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def kill(self) -> None:
+            self.killed = True
+
+    async def exercise() -> bool:
+        process = HangingProcess()
+
+        async def create_process(*_args, **_kwargs):
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        task = asyncio.create_task(IcmpProbe().check("192.168.1.10", 1))
+        await process.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return process.killed
+
+    assert asyncio.run(exercise()) is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("socket error"),
+        RuntimeError("probe error"),
+        ValueError("invalid result"),
+    ],
+)
+def test_liveness_cycle_converts_expected_probe_errors_to_unknown(tmp_path, failure) -> None:
+    class FailingProbe:
+        async def check(self, address: str, timeout_seconds: float) -> ProbeOutcome:
+            raise failure
+
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    saved = repository.create_device(node("192.168.1.70"))
+    result = asyncio.run(
+        LivenessService(repository, probe=FailingProbe(), timeout_seconds=0.2).check_now()
+    )
+
+    status = repository.list_liveness_statuses()[0]
+    assert result.unknown == 1
+    assert status.device_id == saved.id
+    assert status.state == "unknown"
+    assert status.checked_at is not None
+
+
+def test_liveness_cycle_converts_probe_timeout_to_offline(tmp_path) -> None:
+    class HangingProbe:
+        async def check(self, address: str, timeout_seconds: float) -> ProbeOutcome:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    repository.create_device(node("192.168.1.71"))
+    service = LivenessService(repository, probe=HangingProbe(), timeout_seconds=0.1)
+    service._timeout_seconds = 0.01
+
+    result = asyncio.run(service.check_now())
+
+    assert result.offline == 1
+    assert repository.list_liveness_statuses()[0].state == "offline"
+
+
+def test_liveness_run_logs_cycle_error_then_continues_until_stopped(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    service = LivenessService(repository)
+    service._interval_seconds = 0.001
+    stop_event = asyncio.Event()
+    calls = 0
+
+    async def check_now():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database busy")
+        stop_event.set()
+
+    monkeypatch.setattr(service, "check_now", check_now)
+
+    with caplog.at_level("WARNING", logger="app.liveness"):
+        asyncio.run(service.run(stop_event))
+
+    assert calls == 2
+    assert "Liveness cycle failed (OperationalError)" in caplog.text

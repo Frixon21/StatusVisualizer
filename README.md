@@ -59,6 +59,8 @@ When multiple real endpoint identities appear behind the same nonzero managed-sw
 
 The app checks saved, visible nodes every 30 seconds and exposes **Check status** for an immediate refresh. It launches at most 12 ICMP checks at once, with a one-second per-host timeout. Only literal private or link-local IP addresses are eligible; blank values, hostnames, URLs, public addresses, and inferred nodes without an address remain **Not checked**. **No ping reply** means the node did not answer ICMP and may also indicate that its firewall blocks ping.
 
+Remote MQTT sites are checked by their LanTopoLog MQTT service from inside the customer LAN. The dashboard consumes the retained site status message, keeps **Online**, **No ping reply**, and **Not checked** semantics, and shows the remote status as stale/unavailable when the service has not reported recently. Central **Check status** stays local-only.
+
 Only the latest state, check time, and measured round-trip duration are stored on each node. There is no liveness history or discovery behavior.
 
 ## Run from source
@@ -71,10 +73,13 @@ python -m venv .venv
 .\.venv\Scripts\python.exe run.py
 ```
 
-Open [http://localhost:8092](http://localhost:8092). Source runs store the database in `data/status.db`.
+Open [http://localhost:8092](http://localhost:8092). Source runs and the portable EXE both store the database next to the app in a `data\` folder (`data\status.db`).
 
-When `dist\StatusVisualizer.exe` is run directly, it stores the database in
-`%LOCALAPPDATA%\StatusVisualizer\status.db`, so no Administrator access is needed.
+When running from source on this machine, open [http://127.0.0.1:8092/dev/heatmap](http://127.0.0.1:8092/dev/heatmap) to tune packet-loss heatmap colors with sliders. **Save** writes `app/static/heatmap-bands.json` and `heatmap-bands.js`, which are included in dist builds. The tuner page and its API are omitted from the frozen EXE and stripped from Linux dashboard copies.
+
+The dev tuner does **not** work when `StatusVisualizer.exe` from `dist-status-visualizer\Dashboard` is bound to port 8092. Stop that process (Task Manager or close the dashboard window), then start the app with `run.py` from this repo. Confirm with [http://127.0.0.1:8092/api/health](http://127.0.0.1:8092/api/health): `"heatmap_dev_tools": true` means the tuner is available.
+
+When `StatusVisualizer.exe` is double-clicked from a folder (for example `dist-status-visualizer\Dashboard`), it uses that folder's `data\` directory so the whole pack stays portable.
 
 Options:
 
@@ -86,104 +91,15 @@ Options:
 
 `STATUS_VISUALIZER_DATA_DIR` can also set the data directory.
 
-## Run with Docker
+## Archived Docker / Linux installers
 
-Docker Desktop or another Docker Engine with Compose is required. From the project directory, build and start the application with:
-
-```powershell
-docker compose up --build -d
-```
-
-Open [http://localhost:8092](http://localhost:8092). The SQLite database is stored in the Compose-managed `status-visualizer-data` volume, so topology data and manual edits survive image rebuilds and container replacement. Docker Compose prefixes its physical volume name with the project name. The Lantopolog folder is still selected in the browser and uploaded as one import; it does not need to be mounted into the container.
-
-If port `8092` is already in use, choose another host port before starting Compose:
-
-```powershell
-$env:STATUS_VISUALIZER_PORT = "18092"
-docker compose up --build -d
-```
-
-Then open `http://localhost:18092`.
-
-Useful commands:
-
-```powershell
-# Follow application logs
-docker compose logs -f
-
-# Stop the application without deleting its database
-docker compose down
-
-# Stop the application and permanently delete its database volume
-docker compose down -v
-```
-
-The Compose configuration publishes the dashboard only on the Docker host's loopback interface. To intentionally make it available to other computers, start Compose with `STATUS_VISUALIZER_BIND=0.0.0.0` and protect access at the host firewall or reverse proxy. The container runs as a non-root user with a read-only application filesystem; only the named `/data` volume is writable. `NET_RAW` is added back after dropping other Linux capabilities because the current-status feature requires ICMP ping.
-
-On Windows, the checks originate from Docker Desktop's Linux VM and its NAT network rather than directly from the Windows host. ICMP reachability can therefore differ from the standalone EXE, particularly with VPNs, segmented networks, or host firewall rules. Verify the results against representative LAN devices before relying on Docker-based status checks.
-
-An optional destructive smoke test creates an isolated temporary Compose project and volume, verifies health and database persistence across container replacement, and then deletes only those temporary resources:
-
-```powershell
-.\scripts\docker-smoke.ps1
-```
-
-## Run on a Linux VM without Docker
-
-The native Linux installation targets a systemd-based VM and requires Python 3.11 or newer, Python venv support, and `iputils-ping`. Copy the project source to the VM, change into its directory, and then install it. For Ubuntu or Debian:
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv iputils-ping
-sudo bash scripts/install-linux.sh
-```
-
-The secure default listens only on the VM's loopback interface. Reach it from your workstation through an SSH tunnel:
-
-```bash
-ssh -L 8092:127.0.0.1:8092 user@vm-address
-```
-
-Then open `http://localhost:8092` on your workstation. To make the dashboard directly reachable on the VM's network interface, install with:
-
-```bash
-sudo bash scripts/install-linux.sh --host 0.0.0.0 --port 8092
-```
-
-Status Visualizer does not have authentication, so a network-bound installation must be limited to trusted source addresses using the VM firewall or a protected reverse proxy. Do not expose it directly to the internet. Native Linux ICMP checks originate from the VM itself, which generally makes this deployment better suited to checking devices on the VM's LAN than Docker Desktop on Windows.
-
-The installer creates a non-login `status-visualizer` service account, installs the application under `/opt/status-visualizer`, stores SQLite data under `/opt/status-visualizer/data/status.db`, and enables a hardened `status-visualizer.service`. It can be safely rerun from a newer project copy to update the application without replacing its database.
-
-Both locations are configurable. If `--data-dir` is omitted, it defaults to a `data` directory under the selected installation directory:
-
-```bash
-sudo bash scripts/install-linux.sh \
-  --install-dir /srv/status-visualizer \
-  --data-dir /srv/status-visualizer/data
-```
-
-Use the same path options when uninstalling a custom installation. A normal uninstall preserves the data directory; `--purge-data` deletes it.
-
-Operations:
-
-```bash
-sudo systemctl status status-visualizer
-sudo journalctl -u status-visualizer -f
-sudo systemctl restart status-visualizer
-
-# Remove the application but preserve topology data
-sudo bash scripts/uninstall-linux.sh
-
-# Permanently remove the application and topology database
-sudo bash scripts/uninstall-linux.sh --purge-data
-```
-
-For a consistent backup, stop the service before copying `status.db`, then start it again. The browser-based Lantopolog import works the same way as it does on Windows; the export folder remains on the workstation and is uploaded through the browser.
+Legacy Docker and Expo launcher files were moved under `to_delete\`. Use the deployment package below for Windows or Linux.
 
 ## Editing behavior
 
 - Drag nodes or open **Arrange** to apply hierarchy, switch, VLAN, or subnet layouts. **Save current** and **Restore saved** preserve one custom arrangement independently of those defaults.
 - Add manual nodes and connections alongside imported data.
+- Manual nodes can be assigned an access VLAN and tagged VLAN IDs. Choose the **Text label** shape to add draggable diagram annotations without a device icon or container.
 - Editing an imported node with **Preserve edits on re-import** enabled keeps its display name, type, icon, shape, notes, and position on later imports while refreshing source metadata, IP, MAC, ports, links, and VLANs.
 - Imported node IDs and connection IDs are deterministic, so re-import is stable.
 
@@ -197,11 +113,14 @@ The backend accepts at most 20 uploaded entries from the UI model. The parser ad
 .\scripts\build.ps1
 ```
 
-The result is `dist\StatusVisualizer.exe`. From an elevated PowerShell window, `scripts\install.ps1` installs it under Program Files, stores topology data under ProgramData, registers an at-startup scheduled task bound to `127.0.0.1`, and removes any older Status Visualizer firewall rules.
+The result is `dist\StatusVisualizer.exe`. From an elevated PowerShell window, `scripts\install.ps1` installs it under Program Files, stores portable topology data under `Program Files\StatusVisualizer\data`, and registers an at-startup scheduled task bound to `127.0.0.1`.
 
 ## APIs
 
 - `GET /api/health`
+- `GET /api/sites`
+- `GET /api/mqtt/clients`
+- `PATCH /api/mqtt/clients/{uuid}`
 - `GET /api/topology`
 - `GET /api/liveness`
 - `POST /api/liveness/check` (empty JSON object; checks saved nodes only)
@@ -209,10 +128,48 @@ The result is `dist\StatusVisualizer.exe`. From an elevated PowerShell window, `
 - Device CRUD under `/api/devices`
 - `GET`, `POST`, and `DELETE` under `/api/edges`
 
+Topology APIs accept `X-Status-Visualizer-Site`; omit it or use `local` for the original local database.
+
+## Deployment package (recommended)
+
+Build once on a machine with Python:
+
+```powershell
+.\scripts\build-dist-status-visualizer.ps1
+```
+
+That creates `dist-status-visualizer\` with Windows and Linux folders:
+
+| Folder | Where it goes | What you do |
+|---|---|---|
+| `Dashboard` | PC that shows the UI | Edit host/username in `mqtt.json` if needed, double-click **Start Status Visualizer.bat** (asks for password and verifies it) |
+| `MqttService` | Each LanTopoLog VM | Edit `config.json` (export folder + host/username), double-click **INSTALL Service.bat** once |
+| `Dashboard-Linux` | Linux dashboard host | Edit `mqtt.json`, then run `chmod +x *.sh && sudo ./INSTALL.sh` |
+| `MqttService-Linux` | Linux LanTopoLog host | Edit `config.json`, then run `chmod +x *.sh && sudo ./INSTALL.sh` |
+
+Linux folders install source into an isolated Python virtual environment and register systemd services.
+
+You do **not** copy the whole repository or huge export folders between machines. Each host only needs its matching folder. LanTopoLog keeps exporting locally; the service publishes one retained MQTT ZIP to your existing broker.
+
+### Advanced / source runs
+
+MQTT also auto-loads from `mqtt.json` next to `StatusVisualizer.exe`, or from `%LOCALAPPDATA%\StatusVisualizer\mqtt.json`. For source runs you can still set `STATUS_VISUALIZER_MQTT_CONFIG`. Broker outages do not block startup.
+
+In the UI:
+
+1. Open **MQTT clients** when the pending badge appears.
+2. Enter a friendly name and **Approve** (or **Block**).
+3. Use the site selector to switch from Local to approved remotes. Selection is per browser tab.
+4. Remote sites show the latest retained helper status, or stale/unavailable when the helper has not reported recently. Central ICMP checks stay local-only.
+
+See `lantopolog_mqtt_helper/README.md` for service details. Identity and last-published hash survive upgrades under the existing `%ProgramData%\StatusVisualizer\MqttHelper` compatibility path.
+
+Topics must never contain customer names, hostnames, addresses, or locations. Logs include UUIDs and bounded errors, never passwords or full snapshot payloads.
+
 ## Verification
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest --cov=app --cov-branch --cov-fail-under=80
+.\.venv\Scripts\python.exe -m pytest --cov=app --cov-branch --cov-fail-under=95
 .\.venv\Scripts\ruff.exe check app tests run.py
 .\.venv\Scripts\pyright.exe
 node --check app\static\app.js

@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Heatmap band tuner (dev)</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    body { margin: 0; background: var(--bg, #0b1524); color: var(--text, #dbe7f3); }
+    .dev-shell { max-width: 1180px; margin: 0 auto; padding: 18px 20px 32px; display: grid; gap: 16px; }
+    .dev-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    .dev-header h1 { margin: 0; font-size: 18px; }
+    .dev-header p { margin: 6px 0 0; color: var(--muted, #8aa0b5); font-size: 11px; max-width: 640px; line-height: 1.45; }
+    .dev-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .button, .text-button { min-height: 32px; }
+    .preview-panel {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border: 1px solid var(--border, #2a4058);
+      border-radius: 10px;
+      background: var(--panel, #101c2c);
+      padding: 14px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+    }
+    .bands-panel { border: 1px solid var(--border, #2a4058); border-radius: 10px; background: var(--panel, #101c2c); padding: 14px; }
+    .preview-wrap { height: 280px; position: relative; border-radius: 8px; overflow: hidden; margin-top: 8px; }
+    .preview-wrap .graph-viewport { width: 100%; height: 100%; }
+    .preview-wrap .graph-stage { position: absolute; inset: 0; width: 100%; height: 100%; transform: none; }
+    .preview-wrap .heatmap-layer { width: 100%; height: 100%; }
+    .preview-labels { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+    .preview-label { position: absolute; transform: translate(-50%, 0); font-size: 9px; color: #c8d5e3; text-align: center; white-space: nowrap; line-height: 1.25; }
+    .preview-label strong { display: block; font-size: 10px; text-transform: capitalize; color: #e8f0f8; font-weight: 600; }
+    .band-grid { display: grid; gap: 12px; }
+    .band-card { border: 1px solid var(--border, #2a4058); border-radius: 8px; padding: 10px 12px; background: var(--panel-2, #152235); }
+    .band-card h2 { margin: 0 0 8px; font-size: 12px; text-transform: capitalize; }
+    .control-row { display: grid; grid-template-columns: 92px 1fr 56px; gap: 8px; align-items: center; margin-top: 6px; font-size: 10px; }
+    .control-row input[type=range] { width: 100%; }
+    .control-row input[type=color] { width: 100%; height: 28px; border: 1px solid var(--border); background: transparent; padding: 0; }
+    .control-row label.toggle { display: flex; align-items: center; gap: 6px; grid-column: 1 / -1; }
+    .status-line { min-height: 18px; font-size: 10px; color: var(--muted); }
+    .status-line.ok { color: #45e88a; }
+    .status-line.error { color: #f47b3f; }
+  </style>
+</head>
+<body>
+  <div class="dev-shell">
+    <div class="dev-header">
+      <div>
+        <h1>Packet-loss heatmap tuner</h1>
+        <p>
+          Adjust severity bands live, then save to
+          <code>app/static/heatmap-bands.json</code> and regenerate
+          <code>heatmap-bands.js</code>. Production builds exclude this page and the save API.
+        </p>
+      </div>
+      <div class="dev-actions">
+        <button id="reload-bands" class="text-button" type="button">Reload from disk</button>
+        <button id="reset-bands" class="text-button" type="button">Reset defaults</button>
+        <button id="save-bands" class="button button-primary" type="button">Save to project</button>
+      </div>
+    </div>
+
+    <div class="preview-panel">
+      <strong>Preview (all bands)</strong>
+      <div class="preview-wrap">
+        <div class="graph-viewport">
+          <div class="graph-stage">
+            <svg id="heatmap-layer" class="heatmap-layer" viewBox="0 0 960 280" aria-hidden="true"></svg>
+            <div id="preview-labels" class="preview-labels"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bands-panel">
+      <strong>Band controls</strong>
+      <div id="band-grid" class="band-grid"></div>
+      <p id="status-line" class="status-line">Loading…</p>
+    </div>
+  </div>
+
+  <script src="/static/heatmap-bands.js"></script>
+  <script src="/static/topology-utils.js"></script>
+  <script>
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const bandGrid = document.getElementById("band-grid");
+    const statusLine = document.getElementById("status-line");
+    const layer = document.getElementById("heatmap-layer");
+    const previewLabels = document.getElementById("preview-labels");
+    const {heatmapSource} = window.TopologyUtils;
+
+    const PREVIEW_WIDTH = 960;
+    const PREVIEW_HEIGHT = 280;
+    const PREVIEW_Y = 118;
+
+    let bands = [];
+
+    function previewLossPercent(band, index) {
+      if (band.level === "healthy") return 0;
+      if (band.max === null) return 100;
+      const previousMax = index > 0 ? bands[index - 1].max : 0;
+      const floor = previousMax === null ? 0 : Number(previousMax);
+      const ceiling = Number(band.max);
+      if (ceiling <= floor) return ceiling;
+      return Math.round(((floor + ceiling) / 2) * 10) / 10;
+    }
+
+    function previewSamples() {
+      const count = bands.length;
+      if (count === 0) return [];
+      const marginX = 72;
+      const span = PREVIEW_WIDTH - marginX * 2;
+      return bands.map((band, index) => ({
+        x: count === 1 ? PREVIEW_WIDTH / 2 : marginX + (index / (count - 1)) * span,
+        y: PREVIEW_Y,
+        loss: previewLossPercent(band, index),
+        level: band.level,
+      }));
+    }
+
+    function setStatus(text, kind = "") {
+      statusLine.textContent = text;
+      statusLine.className = `status-line${kind ? ` ${kind}` : ""}`;
+    }
+
+    function syncRuntimeBands() {
+      globalThis.__HEATMAP_LOSS_BANDS = Object.freeze(bands.map((band) => Object.freeze({
+        ...band,
+        max: band.max === null ? Infinity : band.max,
+      })));
+    }
+
+    function appendGradient(defs, band) {
+      const gradient = document.createElementNS(SVG_NS, "radialGradient");
+      gradient.id = `topology-heatmap-gradient-${band.level}`;
+      gradient.setAttribute("cx", "50%");
+      gradient.setAttribute("cy", "50%");
+      gradient.setAttribute("r", "50%");
+      const stops = band.vivid
+        ? [["0%", "0.82"], ["38%", "0.34"], ["72%", "0.12"], ["100%", "0"]]
+        : [["0%", "0.9"], ["42%", "0.38"], ["100%", "0"]];
+      for (const [offset, stopOpacity] of stops) {
+        const stop = document.createElementNS(SVG_NS, "stop");
+        stop.setAttribute("offset", offset);
+        stop.setAttribute("stop-color", band.color);
+        stop.setAttribute("stop-opacity", stopOpacity);
+        gradient.append(stop);
+      }
+      defs.append(gradient);
+    }
+
+    function renderPreview() {
+      syncRuntimeBands();
+      const runtimeBands = window.TopologyUtils.getHeatmapLossBands();
+      layer.replaceChildren();
+      const defs = document.createElementNS(SVG_NS, "defs");
+      const filter = document.createElementNS(SVG_NS, "filter");
+      filter.id = "topology-heatmap-soften";
+      filter.setAttribute("x", "-60%");
+      filter.setAttribute("y", "-60%");
+      filter.setAttribute("width", "220%");
+      filter.setAttribute("height", "220%");
+      const blur = document.createElementNS(SVG_NS, "feGaussianBlur");
+      blur.setAttribute("stdDeviation", "24");
+      filter.append(blur);
+      defs.append(filter);
+      for (const band of runtimeBands) appendGradient(defs, band);
+
+      const healthyGroup = document.createElementNS(SVG_NS, "g");
+      healthyGroup.setAttribute("class", "heatmap-sources-healthy");
+      const lossGroup = document.createElementNS(SVG_NS, "g");
+      lossGroup.setAttribute("class", "heatmap-sources-loss");
+      lossGroup.setAttribute("filter", "url(#topology-heatmap-soften)");
+
+      previewLabels.replaceChildren();
+      const samples = previewSamples();
+      for (const sample of samples) {
+        const health = {
+          online: sample.loss < 100,
+          monitoring_state: sample.loss >= 100 ? "degraded" : "normal",
+          loss: {"5m": sample.loss},
+        };
+        const source = heatmapSource(health, "5m");
+        if (!source) continue;
+        const circle = document.createElementNS(SVG_NS, "circle");
+        circle.setAttribute("cx", String(sample.x));
+        circle.setAttribute("cy", String(sample.y));
+        circle.setAttribute("r", String(source.radius));
+        circle.setAttribute("fill", `url(#topology-heatmap-gradient-${source.level})`);
+        circle.setAttribute("opacity", String(source.opacity));
+        (source.vivid ? healthyGroup : lossGroup).append(circle);
+
+        const label = document.createElement("div");
+        label.className = "preview-label";
+        label.style.left = `${(sample.x / PREVIEW_WIDTH) * 100}%`;
+        label.style.top = `${PREVIEW_HEIGHT - 34}px`;
+        const title = document.createElement("strong");
+        title.textContent = sample.level;
+        label.append(title, document.createTextNode(`${sample.loss}% loss`));
+        previewLabels.append(label);
+      }
+      layer.append(defs, healthyGroup, lossGroup);
+    }
+
+    function controlRow(label, input) {
+      const row = document.createElement("div");
+      row.className = "control-row";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const value = document.createElement("span");
+      value.className = "value";
+      row.append(name, input, value);
+      return {row, value};
+    }
+
+    function renderControls() {
+      bandGrid.replaceChildren();
+      for (const band of bands) {
+        const card = document.createElement("section");
+        card.className = "band-card";
+        const title = document.createElement("h2");
+        title.textContent = band.level;
+        card.append(title);
+
+        if (band.max !== null) {
+          const max = document.createElement("input");
+          max.type = "range";
+          max.min = "0";
+          max.max = "100";
+          max.step = "0.1";
+          max.value = String(band.max);
+          const maxRow = controlRow("Max loss %", max);
+          max.addEventListener("input", () => {
+            band.max = Number(max.value);
+            maxRow.value.textContent = `${band.max.toFixed(1)}%`;
+            renderPreview();
+          });
+          maxRow.value.textContent = `${band.max.toFixed(1)}%`;
+          card.append(maxRow.row);
+        }
+
+        const color = document.createElement("input");
+        color.type = "color";
+        color.value = band.color.length === 4 ? band.color : band.color;
+        const colorRow = controlRow("Color", color);
+        color.addEventListener("input", () => {
+          band.color = color.value;
+          colorRow.value.textContent = band.color;
+          renderPreview();
+        });
+        colorRow.value.textContent = band.color;
+        card.append(colorRow.row);
+
+        const opacity = document.createElement("input");
+        opacity.type = "range";
+        opacity.min = "0";
+        opacity.max = "1";
+        opacity.step = "0.01";
+        opacity.value = String(band.opacity);
+        const opacityRow = controlRow("Opacity", opacity);
+        opacity.addEventListener("input", () => {
+          band.opacity = Number(opacity.value);
+          opacityRow.value.textContent = band.opacity.toFixed(2);
+          renderPreview();
+        });
+        opacityRow.value.textContent = band.opacity.toFixed(2);
+        card.append(opacityRow.row);
+
+        const radius = document.createElement("input");
+        radius.type = "range";
+        radius.min = "20";
+        radius.max = "180";
+        radius.step = "1";
+        radius.value = String(band.radius);
+        const radiusRow = controlRow("Radius", radius);
+        radius.addEventListener("input", () => {
+          band.radius = Number(radius.value);
+          radiusRow.value.textContent = `${band.radius.toFixed(0)} px`;
+          renderPreview();
+        });
+        radiusRow.value.textContent = `${band.radius.toFixed(0)} px`;
+        card.append(radiusRow.row);
+
+        const blur = document.createElement("input");
+        blur.type = "range";
+        blur.min = "0";
+        blur.max = "60";
+        blur.step = "1";
+        blur.value = String(band.blur);
+        const blurRow = controlRow("Blur", blur);
+        blur.addEventListener("input", () => {
+          band.blur = Number(blur.value);
+          blurRow.value.textContent = `${band.blur.toFixed(0)} px`;
+          renderPreview();
+        });
+        blurRow.value.textContent = `${band.blur.toFixed(0)} px`;
+        card.append(blurRow.row);
+
+        const vivid = document.createElement("input");
+        vivid.type = "checkbox";
+        vivid.checked = Boolean(band.vivid);
+        const vividRow = document.createElement("div");
+        vividRow.className = "control-row";
+        const vividLabel = document.createElement("label");
+        vividLabel.className = "toggle";
+        vividLabel.append(vivid, document.createTextNode("Soft-light layer (vivid / no loss blur)"));
+        vivid.addEventListener("change", () => {
+          band.vivid = vivid.checked;
+          renderPreview();
+        });
+        vividRow.append(vividLabel);
+        card.append(vividRow);
+
+        bandGrid.append(card);
+      }
+      renderPreview();
+    }
+
+    async function loadBands() {
+      const response = await fetch("/api/dev/heatmap-bands");
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      bands = await response.json();
+      renderControls();
+      setStatus("Loaded current project bands.", "ok");
+    }
+
+    async function saveBands() {
+      const response = await fetch("/api/dev/heatmap-bands", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Status-Visualizer-Request": "1",
+        },
+        body: JSON.stringify(bands),
+      });
+      if (!response.ok) {
+        let message = `${response.status} ${response.statusText}`;
+        try {
+          const body = await response.json();
+          if (typeof body.detail === "string") message = body.detail;
+        } catch (_) { /* ignore */ }
+        throw new Error(message);
+      }
+      bands = await response.json();
+      renderControls();
+      setStatus("Saved heatmap-bands.json and heatmap-bands.js.", "ok");
+    }
+
+    document.getElementById("reload-bands").addEventListener("click", () => {
+      loadBands().catch((error) => setStatus(error.message, "error"));
+    });
+    document.getElementById("reset-bands").addEventListener("click", () => {
+      fetch("/api/dev/heatmap-bands/reset", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Status-Visualizer-Request": "1",
+        },
+        body: "{}",
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+          bands = await response.json();
+          renderControls();
+          setStatus("Restored default bands and saved them to disk.", "ok");
+        })
+        .catch((error) => setStatus(error.message, "error"));
+    });
+    document.getElementById("save-bands").addEventListener("click", () => {
+      saveBands().catch((error) => setStatus(error.message, "error"));
+    });
+
+    loadBands().catch((error) => setStatus(error.message, "error"));
+  </script>
+</body>
+</html>

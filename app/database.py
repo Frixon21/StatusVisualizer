@@ -42,6 +42,10 @@ def _normalize_mac(value: str) -> str:
     return ":".join(compact[index:index + 2] for index in range(0, 12, 2)) if len(compact) == 12 else ""
 
 
+def _metadata_json(metadata: dict[str, Any]) -> str:
+    return json.dumps(metadata, separators=(",", ":"), sort_keys=True)
+
+
 class Repository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
@@ -281,12 +285,12 @@ class Repository:
                     (id, name, address, notes, x, y, source, node_type, icon_type,
                      node_shape, mac_address, locked, probe_address, metadata_json,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (device_id, payload.name, payload.address, payload.notes, payload.x, payload.y,
                  payload.node_type, payload.icon_type, payload.node_shape,
                  _normalize_mac(payload.mac_address), int(payload.locked),
-                 canonical_probe_address(payload.address) or "", now, now),
+                 canonical_probe_address(payload.address) or "", _metadata_json(payload.metadata), now, now),
             )
         result = self.get_device(device_id)
         assert result is not None
@@ -294,23 +298,36 @@ class Repository:
 
     def update_device(self, device_id: str, payload: DeviceInput) -> DeviceRecord | None:
         with self._lock, self._session() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE devices SET name = ?, address = ?, notes = ?, x = ?, y = ?,
+            assignments = """
+                    name = ?, address = ?, notes = ?, x = ?, y = ?,
                     node_type = ?, icon_type = ?, node_shape = ?, mac_address = ?, locked = ?,
                     probe_address = ?,
                     liveness_state = CASE WHEN address != ? THEN 'unknown' ELSE liveness_state END,
                     liveness_checked_at = CASE WHEN address != ? THEN NULL ELSE liveness_checked_at END,
                     liveness_latency_ms = CASE WHEN address != ? THEN NULL ELSE liveness_latency_ms END,
                     updated_at = ?
+            """
+            values: list[Any] = [
+                payload.name, payload.address, payload.notes, payload.x, payload.y,
+                payload.node_type, payload.icon_type, payload.node_shape,
+                _normalize_mac(payload.mac_address), int(payload.locked),
+                canonical_probe_address(payload.address) or "",
+                payload.address, payload.address, payload.address,
+                utc_now(),
+            ]
+            if "metadata" in payload.model_fields_set:
+                assignments += (
+                    ", metadata_json = CASE WHEN source IN ('local', 'manual') "
+                    "THEN ? ELSE metadata_json END"
+                )
+                values.append(_metadata_json(payload.metadata))
+            values.append(device_id)
+            cursor = connection.execute(
+                f"""
+                UPDATE devices SET {assignments}
                 WHERE id = ?
                 """,
-                (payload.name, payload.address, payload.notes, payload.x, payload.y,
-                 payload.node_type, payload.icon_type, payload.node_shape,
-                 _normalize_mac(payload.mac_address), int(payload.locked),
-                 canonical_probe_address(payload.address) or "",
-                 payload.address, payload.address, payload.address,
-                 utc_now(), device_id),
+                values,
             )
         return self.get_device(device_id) if cursor.rowcount else None
 
@@ -479,6 +496,16 @@ class Repository:
             for row in rows
         ]
 
+    def imported_device_ids(self) -> dict[str, str]:
+        with self._lock, self._session() as connection:
+            rows = connection.execute(
+                """
+                SELECT external_id, id FROM devices
+                WHERE source = 'lantopolog' AND external_id IS NOT NULL AND external_id != ''
+                """
+            ).fetchall()
+        return {row["external_id"]: row["id"] for row in rows}
+
     def topology_snapshot(self) -> dict[str, Any]:
         with self._lock, self._session() as connection:
             devices = connection.execute("SELECT * FROM devices ORDER BY name COLLATE NOCASE").fetchall()
@@ -508,7 +535,35 @@ class Repository:
             "import_status": json.loads(status["value_json"]) if status else {},
         }
 
-    def replace_lantopolog(self, topology: ImportedTopology) -> dict[str, object]:
+    def replace_lantopolog(
+        self,
+        topology: ImportedTopology,
+        *,
+        snapshot_hash: str | None = None,
+    ) -> dict[str, object]:
         with self._lock, self._session() as connection:
-            return replace_lantopolog_data(connection, topology)
+            result = replace_lantopolog_data(connection, topology)
+            if snapshot_hash is not None:
+                connection.execute(
+                    """
+                    INSERT INTO app_metadata (key, value_json)
+                    VALUES ('mqtt_snapshot_hash', ?)
+                    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+                    """,
+                    (json.dumps(snapshot_hash),),
+                )
+            return result
+
+    def imported_snapshot_hash(self) -> str:
+        with self._lock, self._session() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM app_metadata WHERE key = 'mqtt_snapshot_hash'"
+            ).fetchone()
+        if not row:
+            return ""
+        try:
+            value = json.loads(row["value_json"])
+        except (TypeError, json.JSONDecodeError):
+            return ""
+        return value if isinstance(value, str) else ""
 

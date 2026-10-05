@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -15,7 +16,7 @@ IconType = Literal[
     "auto", "router", "switch", "access-point", "server",
     "workstation", "printer", "phone", "other",
 ]
-NodeShape = Literal["icon", "card", "circle"]
+NodeShape = Literal["icon", "card", "circle", "text"]
 LivenessState = Literal["online", "offline", "unknown"]
 WORLD_POSITION_MIN = -100.0
 WORLD_POSITION_MAX = 101.0
@@ -38,11 +39,48 @@ class DeviceInput(BaseModel):
     node_shape: NodeShape = "icon"
     mac_address: str = Field(default="", max_length=32)
     locked: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name", "address", "notes", "mac_address")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("metadata")
+    @classmethod
+    def normalize_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if cls is not DeviceInput:
+            return value
+        cleaned: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key).strip()
+            if not key or len(key) > 80:
+                raise ValueError("Metadata keys must be 1-80 characters")
+            if raw_value is None:
+                continue
+            if isinstance(raw_value, (dict, list, tuple, set)):
+                raise TypeError("Metadata values must be simple text")
+            text = str(raw_value).strip()
+            if len(text) > 500:
+                raise ValueError("Metadata values must be 500 characters or fewer")
+            normalized_key = key.lower().replace("_", " ").replace("-", " ")
+            if normalized_key in {"vlan", "vlans"}:
+                if not text:
+                    raise ValueError("VLAN IDs may not be blank")
+                raw_ids = re.split(r"[\s,;]+", text)
+                if any(not item.isdigit() for item in raw_ids):
+                    raise ValueError("VLAN IDs must be whole numbers from 1 to 4094")
+                vlan_ids = sorted({int(item) for item in raw_ids})
+                if any(item < 1 or item > 4094 for item in vlan_ids):
+                    raise ValueError("VLAN IDs must be whole numbers from 1 to 4094")
+                if normalized_key == "vlan" and len(vlan_ids) != 1:
+                    raise ValueError("Access VLAN must contain exactly one VLAN ID")
+                text = ", ".join(str(item) for item in vlan_ids)
+            if text:
+                cleaned[key] = text
+        if len(cleaned) > 40:
+            raise ValueError("A device can have at most 40 metadata fields")
+        return cleaned
 
 
 class DeviceRecord(DeviceInput):
@@ -68,6 +106,27 @@ class LivenessStatus(BaseModel):
 
 class LivenessCheckInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class MqttClientUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=100)
+    state: Literal["pending", "approved", "blocked"] | None = None
+
+    @field_validator("display_name")
+    @classmethod
+    def strip_display_name(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def includes_a_change(self) -> MqttClientUpdateInput:
+        if self.display_name is None and self.state is None:
+            raise ValueError("At least one client setting must be provided")
+        if self.state == "approved" and self.display_name is None:
+            # Existing names are accepted by the registry; this only blocks blank approval requests.
+            return self
+        return self
 
 
 class EdgeInput(BaseModel):

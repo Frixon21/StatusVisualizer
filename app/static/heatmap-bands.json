@@ -1,0 +1,65 @@
+[
+  {
+    "max": 0.0,
+    "level": "healthy",
+    "color": "#3bc878",
+    "opacity": 0.3,
+    "radius": 100.0,
+    "blur": 0.0,
+    "vivid": true
+  },
+  {
+    "max": 1.0,
+    "level": "minimal",
+    "color": "#3bc878",
+    "opacity": 0.35,
+    "radius": 100.0,
+    "blur": 0.0,
+    "vivid": true
+  },
+  {
+    "max": 3.0,
+    "level": "minor",
+    "color": "#b5d446",
+    "opacity": 0.3,
+    "radius": 105.0,
+    "blur": 18.0,
+    "vivid": false
+  },
+  {
+    "max": 7.0,
+    "level": "warning",
+    "color": "#f2be3f",
+    "opacity": 0.52,
+    "radius": 116.0,
+    "blur": 16.0,
+    "vivid": false
+  },
+  {
+    "max": 15.0,
+    "level": "poor",
+    "color": "#f47b3f",
+    "opacity": 0.47,
+    "radius": 122.0,
+    "blur": 28.0,
+    "vivid": false
+  },
+  {
+    "max": 30.0,
+    "level": "bad",
+    "color": "#ee4758",
+    "opacity": 0.44,
+    "radius": 126.0,
+    "blur": 30.0,
+    "vivid": false
+  },
+  {
+    "max": null,
+    "level": "critical",
+    "color": "#c80f24",
+    "opacity": 0.54,
+    "radius": 134.0,
+    "blur": 34.0,
+    "vivid": false
+  }
+]

@@ -6,18 +6,19 @@ from pathlib import Path
 from app.config import Settings, default_data_dir
 
 
-def test_frozen_standalone_app_uses_current_users_local_app_data(
+def test_frozen_standalone_app_uses_portable_data_next_to_exe(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    local_app_data = tmp_path / "LocalAppData"
-    program_data = tmp_path / "ProgramData"
+    exe_dir = tmp_path / "app"
+    exe_dir.mkdir()
+    exe_path = exe_dir / "StatusVisualizer.exe"
+    exe_path.write_bytes(b"")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
-    monkeypatch.setenv("PROGRAMDATA", str(program_data))
+    monkeypatch.setattr(sys, "executable", str(exe_path))
     monkeypatch.delenv("STATUS_VISUALIZER_DATA_DIR", raising=False)
 
-    assert default_data_dir() == local_app_data / "StatusVisualizer"
+    assert default_data_dir() == exe_dir / "data"
 
 
 def test_explicit_data_directory_environment_variable_still_wins(

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from app.database import Repository
-from app.models import DeviceInput
+from app.models import DeviceInput, DevicePosition, EdgeInput
 
 OBSOLETE_COLUMNS = {
     "devices": {
@@ -145,3 +147,103 @@ def test_initialization_repairs_blank_probe_addresses_from_the_broken_cleanup_re
     assert repaired is not None
     assert repaired.liveness_state == "unknown"
     assert repaired.liveness_checked_at is None
+
+
+@pytest.mark.parametrize(
+    "stored_value",
+    [
+        "{not-json",
+        "null",
+        "[]",
+        '{"positions": {}, "saved_at": "2026-09-30T12:00:00Z"}',
+        '{"positions": [], "saved_at": 123}',
+        '{"positions": []}',
+    ],
+)
+def test_corrupt_custom_layout_metadata_is_treated_as_absent(tmp_path, stored_value) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            "INSERT INTO app_metadata (key, value_json) VALUES (?, ?)",
+            ("topology_custom_layout", stored_value),
+        )
+
+    assert repository.get_custom_layout() == {
+        "exists": False,
+        "positions": [],
+        "saved_at": None,
+    }
+
+
+def test_custom_layout_round_trips_positions_and_timestamp(tmp_path) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    positions = [DevicePosition(id="device-1", x=-10, y=101)]
+
+    saved = repository.save_custom_layout(positions)
+
+    assert saved["exists"] is True
+    assert saved["positions"] == [{"id": "device-1", "x": -10.0, "y": 101.0}]
+    assert saved["saved_at"].endswith("Z")
+    assert repository.get_custom_layout() == saved
+
+
+def test_create_edge_rejects_missing_self_and_duplicate_endpoints(tmp_path) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    first = repository.create_device(DeviceInput(name="A", x=0.1, y=0.2))
+    second = repository.create_device(DeviceInput(name="B", x=0.3, y=0.4))
+
+    with pytest.raises(ValueError, match="endpoints must exist"):
+        repository.create_edge(EdgeInput(source_id=first.id, target_id="missing"))
+    with pytest.raises(ValueError, match="different nodes"):
+        EdgeInput(source_id=first.id, target_id=first.id)
+
+    created = repository.create_edge(
+        EdgeInput(source_id=second.id, target_id=first.id, label="uplink")
+    )
+    with pytest.raises(ValueError, match="already connected"):
+        repository.create_edge(EdgeInput(source_id=first.id, target_id=second.id))
+
+    assert (created.source_id, created.target_id) == tuple(sorted((first.id, second.id)))
+    assert repository.delete_edge("missing") is False
+    assert repository.delete_edge(created.id) is True
+
+
+@pytest.mark.parametrize("stored_value", ["{broken", "123", "null", '{"hash":"value"}'])
+def test_invalid_imported_snapshot_metadata_returns_empty_string(tmp_path, stored_value) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            "INSERT INTO app_metadata (key, value_json) VALUES (?, ?)",
+            ("mqtt_snapshot_hash", stored_value),
+        )
+
+    assert repository.imported_snapshot_hash() == ""
+
+
+def test_topology_snapshot_decodes_import_and_vlan_metadata(tmp_path) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO lantopolog_vlans
+                (id, vlan_id, name, switch_key, tagged_ports, untagged_ports, metadata_json)
+            VALUES ('vlan-1', '20', 'Voice', 'switch:1', '1', '2', '{"source":"csv"}')
+            """
+        )
+        connection.execute(
+            "INSERT INTO app_metadata (key, value_json) VALUES (?, ?)",
+            ("lantopolog_import", '{"files_used":2,"file_names":["a.csv","b.csv"]}'),
+        )
+
+    result = repository.topology_snapshot()
+
+    assert result["vlans"][0]["metadata"] == {"source": "csv"}
+    assert result["import_status"] == {
+        "files_used": 2,
+        "file_names": ["a.csv", "b.csv"],
+    }

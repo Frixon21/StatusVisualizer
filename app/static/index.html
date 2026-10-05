@@ -11,17 +11,28 @@
   <header class="topbar">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">NT</div>
-      <div><h1>Network Topology</h1><p>Lantopolog inventory and topology editor</p></div>
+      <div><h1>Network Topology</h1><p>LanTopoLog inventory and topology editor</p></div>
     </div>
-    <div class="topbar-actions">
-      <span id="import-state" class="service-state"><i></i><span>No export imported</span></span>
-      <button id="theme-toggle" class="button button-secondary theme-toggle" type="button" aria-pressed="false" aria-label="Switch to light mode">Light mode</button>
+    <div class="topbar-controls">
+      <div class="topbar-site-row">
+        <label class="site-picker"><span class="sr-only">Displayed site</span><select id="site-selector" aria-label="Displayed site"><option value="local">Local</option></select></label>
+        <button id="mqtt-clients-button" class="button button-secondary client-button" type="button" aria-controls="mqtt-clients-panel" aria-expanded="false">Manage sites <span id="pending-client-count" class="count-badge" hidden>0</span></button>
+      </div>
+      <div class="topbar-action-row">
+        <span id="import-state" class="service-state"><i></i><span>No export imported</span></span>
+        <span id="liveness-status" class="status-chip" hidden><i></i><span>Central ping unavailable</span></span>
+        <button id="import-button" class="button button-primary" type="button">Import</button>
+        <details id="app-options" class="toolbar-menu app-menu" aria-label="Application options">
+          <summary class="icon-button overflow-button" aria-label="Open application menu" title="More options">⋮</summary>
+          <div class="toolbar-menu-panel app-menu-panel">
+            <button id="theme-toggle" class="menu-action" type="button" aria-pressed="false" aria-label="Switch to light mode"><span class="theme-icon" aria-hidden="true">☀</span><span>Light theme</span></button>
+            <button id="check-liveness" class="menu-action" type="button"><span aria-hidden="true">●</span><span>Check device status</span></button>
+            <div class="menu-divider" role="separator"></div>
+            <button id="clear-nodes" class="menu-action menu-action-danger" type="button">Clear topology</button>
+          </div>
+        </details>
+      </div>
       <input id="import-folder" type="file" webkitdirectory directory multiple hidden>
-      <button id="check-liveness" class="button button-secondary" type="button">Check status</button>
-      <button id="import-button" class="button button-primary" type="button">Import Lantopolog</button>
-      <button id="connect-button" class="button button-secondary" type="button" aria-pressed="false">Connect nodes</button>
-      <button id="add-button" class="button button-secondary" type="button">Add node</button>
-      <button id="clear-nodes" class="button button-danger" type="button">Clear nodes</button>
     </div>
   </header>
 
@@ -29,9 +40,9 @@
     <div class="stat"><strong id="stat-total">0</strong><span>Nodes</span></div>
     <div class="stat"><strong id="stat-infrastructure">0</strong><span>Infrastructure</span></div>
     <div class="stat"><strong id="stat-endpoints">0</strong><span>Endpoints</span></div>
-    <div class="stat"><strong id="stat-connections">0</strong><span>Connections</span></div>
+    <div class="stat"><strong id="stat-connections">0</strong><span>Links</span></div>
     <div class="stat"><strong id="stat-vlans">0</strong><span>VLANs</span></div>
-    <div class="scan-summary"><span id="import-summary">Select one Lantopolog Export folder</span><strong id="refresh-time">—</strong></div>
+    <div class="scan-summary"><span id="import-summary" class="sr-only">Select one LanTopoLog Export folder</span><span>Updated <strong id="refresh-time">—</strong></span></div>
   </section>
 
   <main id="workspace" class="workspace">
@@ -61,67 +72,112 @@
       <div class="graph-toolbar">
         <div><strong>Editable topology</strong><span id="mode-hint">Pan the canvas or drag nodes to arrange them</span></div>
         <div class="toolbar-actions">
-          <div class="tool-toggle" role="group" aria-label="Canvas tool">
-            <button id="pan-tool" class="text-button is-active" type="button" aria-pressed="true">Pan</button>
-            <button id="box-select-tool" class="text-button" type="button" aria-pressed="false">Box select</button>
+          <div class="toolbar-group" role="group" aria-label="Edit topology">
+            <span class="toolbar-group-label">Edit</span>
+            <div class="tool-toggle">
+              <button id="pan-tool" class="text-button is-active" type="button" aria-pressed="true">Pan</button>
+              <button id="box-select-tool" class="text-button" type="button" aria-pressed="false">Select</button>
+            </div>
+            <details id="add-options" class="toolbar-menu" aria-label="Add topology item">
+              <summary class="text-button">Add ▾</summary>
+              <div class="toolbar-menu-panel compact-menu-panel">
+                <button id="add-button" class="menu-action" type="button">Add device</button>
+              </div>
+            </details>
+            <button id="connect-button" class="text-button" type="button" aria-pressed="false">Connect</button>
           </div>
-          <button id="snap-grid" class="text-button" type="button" aria-pressed="false">Snap grid: Off</button>
-          <button id="vlan-view" class="text-button" type="button" aria-pressed="true">VLAN view: On</button>
-          <details id="arrange-options" class="toolbar-menu" aria-label="Arrangement options">
-            <summary class="text-button">Arrange</summary>
-            <div class="toolbar-menu-panel arrange-menu-panel">
-              <strong>Automatic layouts</strong>
-              <div class="arrange-actions">
-                <button id="arrange-hierarchy" class="text-button" type="button">Arrange hierarchy</button>
-                <button id="arrange-switch" class="text-button" type="button">Arrange by switch</button>
-                <button id="arrange-vlan" class="text-button" type="button">Arrange by VLAN</button>
-                <button id="arrange-subnet" class="text-button" type="button">Arrange by subnet</button>
+          <div class="toolbar-group" role="group" aria-label="Topology view">
+            <span class="toolbar-group-label">View</span>
+            <button id="snap-grid" class="text-button" type="button" aria-pressed="false">Snap</button>
+            <button id="vlan-view" class="text-button" type="button" aria-pressed="true">VLAN ✓</button>
+            <details id="heatmap-options" class="toolbar-menu heatmap-menu" aria-label="Loss heatmap options">
+              <summary class="text-button" id="heatmap-menu-summary">Loss ▾</summary>
+              <div class="toolbar-menu-panel heatmap-menu-panel">
+                <label class="menu-toggle"><input id="heatmap-toggle" type="checkbox"> Show loss heatmap</label>
+                <label class="display-label-mode heatmap-window-row"><span>Window</span>
+                  <select id="heatmap-window" aria-label="Packet loss time window" disabled>
+                    <option value="5m">5m</option>
+                    <option value="15m" selected>15m</option>
+                    <option value="1h">1h</option>
+                    <option value="12h">12h</option>
+                    <option value="24h">24h</option>
+                  </select>
+                </label>
+                <label class="heatmap-min-loss-row"><span>Min glow %</span>
+                  <input id="heatmap-min-loss" type="number" min="0" max="99.9" step="0.1" value="0" inputmode="decimal" aria-label="Minimum packet loss percent for heatmap glow" disabled placeholder="Off">
+                  <input id="heatmap-min-loss-slider" type="range" min="0.1" max="99.9" step="0.1" value="0.1" aria-label="Minimum packet loss slider" disabled>
+                </label>
+                <div class="menu-divider" role="separator"></div>
+                <strong>Severity layers</strong>
+                <label class="menu-toggle"><input id="heatmap-show-healthy" type="checkbox" checked disabled> Healthy (0%)</label>
+                <label class="menu-toggle"><input id="heatmap-show-critical" type="checkbox" checked disabled> Critical (100% / offline)</label>
               </div>
-              <strong class="menu-section-title">Custom arrangement</strong>
-              <div class="arrange-actions custom-arrange-actions">
-                <button id="save-custom-arrangement" class="text-button" type="button">Save current</button>
-                <button id="restore-custom-arrangement" class="text-button" type="button">Restore saved</button>
+            </details>
+            <details id="arrange-options" class="toolbar-menu" aria-label="Arrangement options">
+              <summary class="text-button">Arrange ▾</summary>
+              <div class="toolbar-menu-panel arrange-menu-panel">
+                <strong>Automatic layouts</strong>
+                <div class="arrange-actions">
+                  <button id="arrange-hierarchy" class="text-button" type="button">Arrange hierarchy</button>
+                  <button id="arrange-switch" class="text-button" type="button">Arrange by switch</button>
+                  <button id="arrange-vlan" class="text-button" type="button">Arrange by VLAN</button>
+                  <button id="arrange-subnet" class="text-button" type="button">Arrange by subnet</button>
+                </div>
+                <strong class="menu-section-title">Custom arrangement</strong>
+                <div class="arrange-actions custom-arrange-actions">
+                  <button id="save-custom-arrangement" class="text-button" type="button">Save current</button>
+                  <button id="restore-custom-arrangement" class="text-button" type="button">Restore saved</button>
+                </div>
               </div>
-            </div>
-          </details>
-          <details id="display-options" class="toolbar-menu" aria-label="Display options">
-            <summary class="text-button">Display</summary>
-            <div class="toolbar-menu-panel">
-              <strong>Show device types</strong>
-              <div class="display-type-grid">
-                <label><input type="checkbox" data-display-type="router" checked> Routers</label>
-                <label><input type="checkbox" data-display-type="switch" checked> Switches</label>
-                <label><input type="checkbox" data-display-type="access-point" checked> Access points</label>
-                <label><input type="checkbox" data-display-type="server" checked> Servers</label>
-                <label><input type="checkbox" data-display-type="workstation" checked> Workstations</label>
-                <label><input type="checkbox" data-display-type="printer" checked> Printers</label>
-                <label><input type="checkbox" data-display-type="phone" checked> Phones</label>
-                <label><input type="checkbox" data-display-type="other" checked> Other / unknown</label>
+            </details>
+            <details id="display-options" class="toolbar-menu" aria-label="Display options">
+              <summary class="text-button">Display ▾</summary>
+              <div class="toolbar-menu-panel">
+                <strong>Show device types</strong>
+                <div class="display-type-grid">
+                  <label><input type="checkbox" data-display-type="router" checked> Routers</label>
+                  <label><input type="checkbox" data-display-type="switch" checked> Switches</label>
+                  <label><input type="checkbox" data-display-type="access-point" checked> Access points</label>
+                  <label><input type="checkbox" data-display-type="server" checked> Servers</label>
+                  <label><input type="checkbox" data-display-type="workstation" checked> Workstations</label>
+                  <label><input type="checkbox" data-display-type="printer" checked> Printers</label>
+                  <label><input type="checkbox" data-display-type="phone" checked> Phones</label>
+                  <label><input type="checkbox" data-display-type="other" checked> Other / unknown</label>
+                </div>
+                <label class="display-option"><input id="hide-manual" type="checkbox"> Hide manually added devices</label>
+                <label class="display-option"><input id="hide-no-ip" type="checkbox"> Hide devices with no IP address</label>
+                <label class="display-label-mode"><span>Node labels</span>
+                  <select id="label-mode">
+                    <option value="hostname">Hostname</option>
+                    <option value="ip">IP address</option>
+                    <option value="both" selected>Hostname + IP</option>
+                  </select>
+                </label>
+                <div class="display-actions">
+                  <button id="collapse-unmanaged" class="text-button" type="button">Collapse unmanaged groups</button>
+                  <button id="expand-unmanaged" class="text-button" type="button">Expand all groups</button>
+                </div>
               </div>
-              <label class="display-option"><input id="hide-manual" type="checkbox"> Hide manually added devices</label>
-              <label class="display-label-mode"><span>Node labels</span>
-                <select id="label-mode">
-                  <option value="hostname">Hostname</option>
-                  <option value="ip">IP address</option>
-                  <option value="both" selected>Hostname + IP</option>
-                </select>
-              </label>
-              <div class="display-actions">
-                <button id="collapse-unmanaged" class="text-button" type="button">Collapse unmanaged groups</button>
-                <button id="expand-unmanaged" class="text-button" type="button">Expand all groups</button>
+            </details>
+          </div>
+          <div class="toolbar-group toolbar-output" role="group" aria-label="Export and zoom">
+            <details id="export-options" class="toolbar-menu" aria-label="Export options">
+              <summary class="text-button">Export ▾</summary>
+              <div class="toolbar-menu-panel compact-menu-panel">
+                <button id="print-topology" class="menu-action" type="button">Save diagram as PDF</button>
               </div>
-            </div>
-          </details>
-          <button id="print-topology" class="text-button" type="button">Save diagram PDF</button>
-          <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out">−</button>
-          <span id="zoom-label">100%</span>
-          <button id="zoom-in" class="icon-button" type="button" aria-label="Zoom in">+</button>
-          <button id="zoom-fit" class="text-button" type="button">Fit</button>
+            </details>
+            <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out">−</button>
+            <span id="zoom-label">100%</span>
+            <button id="zoom-in" class="icon-button" type="button" aria-label="Zoom in">+</button>
+            <button id="zoom-fit" class="text-button" type="button">Fit</button>
+          </div>
         </div>
       </div>
       <div id="graph-viewport" class="graph-viewport" aria-label="Interactive network topology">
         <div id="graph-stage" class="graph-stage">
           <div id="vlan-layer" class="vlan-layer" aria-hidden="true"></div>
+          <svg id="heatmap-layer" class="heatmap-layer" viewBox="0 0 1800 1100" aria-hidden="true"></svg>
           <svg id="edge-layer" class="edge-layer" viewBox="0 0 1800 1100" aria-label="Network connections"></svg>
           <div id="node-layer" class="node-layer"></div>
         </div>
@@ -144,8 +200,17 @@
 
     <aside id="detail-panel" class="detail-panel" hidden><div id="detail-content"></div></aside>
   </main>
+  <section id="mqtt-clients-panel" class="client-panel" aria-labelledby="mqtt-clients-title" hidden>
+    <div class="client-panel-header">
+      <div><h2 id="mqtt-clients-title">MQTT clients</h2><p>Approve discovered clients and give them a local friendly name.</p></div>
+      <button id="close-mqtt-clients" class="close-panel" type="button" aria-label="Close MQTT clients">×</button>
+    </div>
+    <div id="mqtt-connection-state" class="client-connection-state">MQTT status unavailable</div>
+    <div id="mqtt-clients-list" class="client-list"></div>
+  </section>
   <div id="toast-region" class="toast-region" aria-live="polite"></div>
 </div>
+<script src="/static/heatmap-bands.js"></script>
 <script src="/static/topology-utils.js" defer></script>
 <script src="/static/app.js" defer></script>
 </body>

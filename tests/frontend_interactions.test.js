@@ -11,9 +11,15 @@ const {
   constrainPanToBounds,
   fitTransform,
   focusTransform,
+  healthWindowValue,
+  heatmapDecoration,
+  heatmapGlowVisible,
+  heatmapOverlayVisible,
+  heatmapSource,
   moveSelectedNodes,
   nodeDisplayLabel,
   nodeVlanIds,
+  normalizeManualVlanIds,
   nodesInsideBox,
   orthogonalEdgePath,
   reconcileVisibleSelection,
@@ -29,6 +35,70 @@ const {
   viewportToWorld,
   zoomScale,
 } = require("../app/static/topology-utils.js");
+
+test("packet-loss heatmap uses loss severity on the canvas and keeps offline detail semantics", () => {
+  assert.equal(heatmapSource({online: false, loss: {"5m": 100}}, "5m").level, "critical");
+  assert.deepEqual(heatmapDecoration({online: false, loss: {"5m": 100}}, "5m"), {
+    level: "offline", loss: 100, hasData: true, partial: false,
+  });
+  assert.equal(heatmapSource({online: true, loss: {"5m": 0}}, "5m").level, "healthy");
+  assert.equal(heatmapSource({
+    online: true, state: "online", monitoring_state: "normal", loss: {"5m": null},
+  }, "5m").level, "healthy");
+  assert.deepEqual(heatmapDecoration({online: true, loss: {"5m": 0}}, "5m").level, "healthy");
+  assert.equal(heatmapSource({online: true, loss: {"5m": 1.2}}, "5m").level, "minor");
+  assert.equal(heatmapSource({online: true, loss: {"5m": 4}}, "5m").level, "warning");
+  assert.equal(heatmapSource({online: true, loss: {"5m": 8}}, "5m").level, "poor");
+  assert.equal(heatmapSource({online: true, loss: {"5m": 18}}, "5m").level, "bad");
+  assert.equal(heatmapSource({online: true, loss: {"5m": 40}}, "5m").level, "critical");
+});
+
+test("heatmap layer toggles hide only zero-loss healthy and full critical/offline devices", () => {
+  const highLoss = heatmapSource({online: true, loss: {"5m": 56.6}}, "5m");
+  assert.equal(highLoss.level, "critical");
+  assert.equal(
+    heatmapOverlayVisible(highLoss, {online: true}, {showHealthy: true, showCritical: false}),
+    true,
+  );
+  const totalLoss = heatmapSource({online: true, loss: {"5m": 100}}, "5m");
+  assert.equal(
+    heatmapOverlayVisible(totalLoss, {online: true}, {showHealthy: true, showCritical: false}),
+    false,
+  );
+  const offline = heatmapSource({online: false, loss: {"5m": 56.6}}, "5m");
+  assert.equal(
+    heatmapOverlayVisible(offline, {online: false}, {showHealthy: true, showCritical: false}),
+    false,
+  );
+  const healthy = heatmapSource({online: true, loss: {"5m": 0}}, "5m");
+  assert.equal(
+    heatmapOverlayVisible(healthy, {online: true}, {showHealthy: false, showCritical: true}),
+    false,
+  );
+});
+
+test("packet-loss heatmap treats missing history as no data and marks short observations partial", () => {
+  assert.deepEqual(heatmapDecoration(null, "24h"), {
+    level: "no-data", loss: null, hasData: false, partial: false,
+  });
+  assert.deepEqual(heatmapDecoration({online: true, loss: {"24h": null}}, "24h").level, "no-data");
+  assert.equal(heatmapDecoration({
+    online: true, loss: {"24h": 0}, observed_seconds: {"24h": 180},
+  }, "24h").partial, true);
+});
+
+test("health window values expose loss, RTT average, and observation coverage without mutation", () => {
+  const health = Object.freeze({
+    loss: Object.freeze({"15m": 0.8}),
+    rtt_avg_ms: Object.freeze({"15m": 4.1}),
+    observed_seconds: Object.freeze({"15m": 600}),
+  });
+  assert.deepEqual(healthWindowValue(health, "15m"), {
+    loss: 0.8, rttAverageMs: 4.1, observedSeconds: 600, hasData: true, partial: true,
+  });
+  assert.equal(Object.isFrozen(healthWindowValue(health, "15m")), true);
+  assert.equal(health.loss["15m"], 0.8);
+});
 
 function positionsById(positions) {
   return new Map(positions.map((position) => [position.id, position]));
@@ -165,6 +235,17 @@ test("VLAN membership combines endpoint metadata and interface PVIDs", () => {
   ];
 
   assert.deepEqual(nodeVlanIds(node, interfaces, []), ["10", "20", "30"]);
+});
+
+test("manual VLAN input is validated, deduplicated, sorted, and canonicalized", () => {
+  assert.deepEqual(normalizeManualVlanIds("30, 10,20, 10"), {
+    ids: ["10", "20", "30"],
+    value: "10, 20, 30",
+  });
+  assert.deepEqual(normalizeManualVlanIds(""), {ids: [], value: ""});
+  assert.throws(() => normalizeManualVlanIds("10, guest"), /whole numbers/);
+  assert.throws(() => normalizeManualVlanIds("0, 20"), /between 1 and 4094/);
+  assert.throws(() => normalizeManualVlanIds("4095"), /between 1 and 4094/);
 });
 
 test("managed infrastructure inherits every VLAN configured on that switch", () => {
@@ -648,6 +729,34 @@ test("visible topology hides categories and collapsed unmanaged children without
   assert.ok(result.edges.every((edge) => visibleIds.has(edge.source_id) && visibleIds.has(edge.target_id)));
 });
 
+test("heatmap glow threshold skips low-loss halos without hiding devices", () => {
+  const health = {online: true, loss: {"5m": 2.5}};
+  assert.equal(heatmapGlowVisible(health, "5m", 0), true);
+  assert.equal(heatmapGlowVisible(health, "5m", 5), false);
+  assert.equal(heatmapGlowVisible({online: true, loss: {"5m": null}}, "5m", 5), true);
+  const nodes = [
+    {id: "low", node_type: "workstation", health: {online: true, loss: {"5m": 2.5}}},
+    {id: "high", node_type: "workstation", health: {online: true, loss: {"5m": 12.4}}},
+  ];
+  assert.deepEqual(visibleTopology(nodes, []).nodes.map(({id}) => id), ["low", "high"]);
+});
+
+test("visible topology can hide devices without an IP address", () => {
+  const nodes = [
+    {id: "with-ip", node_type: "workstation", address: "192.168.1.10"},
+    {id: "no-ip", node_type: "workstation", address: ""},
+    {id: "mac-only", node_type: "other", address: null},
+    {id: "fanout", node_type: "switch", address: "", metadata: {"Synthetic Role": "shared-port-fanout"}},
+  ];
+  const edges = [
+    {id: "link", source_id: "with-ip", target_id: "no-ip"},
+    {id: "fanout-link", source_id: "fanout", target_id: "with-ip"},
+  ];
+  const result = visibleTopology(nodes, edges, {hideNoIp: true});
+  assert.deepEqual(result.nodes.map(({id}) => id), ["with-ip", "fanout"]);
+  assert.deepEqual(result.edges.map(({id}) => id), ["fanout-link"]);
+});
+
 test("device display labels support hostname, IP, and both modes with useful fallbacks", () => {
   const complete = {name: "front-desk", address: "192.168.30.15"};
   assert.deepEqual(nodeDisplayLabel(complete, "hostname"), {primary: "front-desk", secondary: ""});
@@ -672,6 +781,12 @@ test("device display labels support hostname, IP, and both modes with useful fal
     primary: "10.0.0.4",
     secondary: "",
   });
+});
+
+test("text-label nodes keep only annotation copy in their display label", () => {
+  const label = nodeDisplayLabel({name: "PCI scope", address: "192.168.40.5", node_shape: "text"}, "both");
+
+  assert.deepEqual(label, {primary: "PCI scope", secondary: ""});
 });
 
 test("device display labels return immutable raw text for the renderer to escape", () => {

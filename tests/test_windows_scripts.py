@@ -48,6 +48,12 @@ def test_installer_binds_to_localhost_by_default() -> None:
     assert "[int]$Port = 8092" in script
 
 
+def test_installer_keeps_portable_data_next_to_the_exe() -> None:
+    script = _script("install.ps1")
+    assert 'Join-Path $installDir "data"' in script
+    assert 'Join-Path $env:ProgramData "StatusVisualizer"' not in script
+
+
 def test_installer_has_no_obsolete_discovery_scope() -> None:
     script = _script("install.ps1")
 

@@ -6,6 +6,7 @@
   const WORLD_MIN = -100;
   const WORLD_MAX = 101;
   const GRID_PIXELS = 22;
+  const SVG_NS = "http://www.w3.org/2000/svg";
   const INFRASTRUCTURE_TYPES = new Set(["router", "switch", "access-point", "server"]);
   const EXPORT_FILES = new Set([
     "complist.csv", "complist2.csv", "sw_list.csv", "sw_conn.csv",
@@ -13,17 +14,18 @@
     "swlist.csv", "swconn.csv", "portlist.csv", "vlanlist.csv",
   ]);
   const ICON_TYPES = ["auto", "router", "switch", "access-point", "server", "workstation", "printer", "phone", "other"];
-  const SHAPES = ["icon", "card", "circle"];
+  const SHAPES = ["icon", "card", "circle", "text"];
   const {
     arrangeNodesHierarchically, arrangeNodesBySubnet, arrangeNodesBySwitch, arrangeNodesByVlan,
     cancelViewportGestures, constrainPanToBounds, fitTransform, focusTransform, moveSelectedNodes,
-    nodeDisplayLabel, nodeVlanIds, nodesInsideBox, resolveIconType, shouldAddMarqueeSelection,
-    orthogonalEdgePath, reconcileVisibleSelection, topologyIcon, unmanagedGroupChildren, visibleTopology,
+    nodeDisplayLabel, nodeVlanIds, normalizeManualVlanIds, nodesInsideBox, resolveIconType, shouldAddMarqueeSelection,
+    healthWindowValue, heatmapGlowVisible, heatmapOverlayVisible, heatmapSource, orthogonalEdgePath, reconcileVisibleSelection, topologyIcon, unmanagedGroupChildren, visibleTopology,
     vlanGroups, vlanNodeDecoration, viewportToWorld, zoomScale,
   } = window.TopologyUtils;
 
   const displayPreferences = readDisplayPreferences();
   const initialTheme = readThemePreference();
+  const initialSite = readSitePreference();
 
   const state = {
     nodes: [], edges: [], interfaces: [], vlans: [], importStatus: {},
@@ -31,19 +33,26 @@
     filter: "all", search: "", connecting: false, connectSourceId: null,
     transform: {x: 0, y: 0, scale: 1}, fitted: false, fittedForNodes: false,
     tool: "pan", snapToGrid: readSnapPreference(), vlanView: readVlanPreference(),
+    heatmapEnabled: readHeatmapPreference(), heatmapWindow: readHeatmapWindowPreference(),
+    heatmapShowHealthy: readHeatmapLayerPreference("topology-health-heatmap-show-healthy"),
+    heatmapShowCritical: readHeatmapLayerPreference("topology-health-heatmap-show-critical"),
+    heatmapMinLoss: readHeatmapMinLossPreference(),
     hiddenTypes: displayPreferences.hiddenTypes, hideManual: displayPreferences.hideManual,
+    hideNoIp: displayPreferences.hideNoIp,
     labelMode: displayPreferences.labelMode, collapsedUnmanagedGroups: new Set(),
     inventoryCollapsed: readInventoryPreference(),
     theme: initialTheme,
+    siteId: initialSite, sites: [], mqttClients: [], mqttStatus: {}, siteEpoch: 0,
+    selectedImportMarker: null, livenessAvailable: true, livenessStale: false,
     panning: null, marquee: null, dragging: null,
   };
   const el = {
     viewport: document.getElementById("graph-viewport"), stage: document.getElementById("graph-stage"),
+    heatmapLayer: document.getElementById("heatmap-layer"),
     nodeLayer: document.getElementById("node-layer"), edgeLayer: document.getElementById("edge-layer"),
-    vlanLayer: document.getElementById("vlan-layer"), vlanLegend: document.getElementById("vlan-legend"),
+    vlanLegend: document.getElementById("vlan-legend"),
     selectionBox: document.getElementById("selection-box"),
     inventory: document.getElementById("inventory-list"), detail: document.getElementById("detail-panel"),
-    inventoryPanel: document.getElementById("inventory-panel"),
     inventoryToggle: document.getElementById("toggle-inventory"),
     workspace: document.getElementById("workspace"), arrangeOptions: document.getElementById("arrange-options"),
     detailContent: document.getElementById("detail-content"), empty: document.getElementById("graph-empty"),
@@ -54,6 +63,12 @@
     importState: document.getElementById("import-state"), connectButton: document.getElementById("connect-button"),
     modeHint: document.getElementById("mode-hint"), zoomLabel: document.getElementById("zoom-label"),
     snapGrid: document.getElementById("snap-grid"), vlanView: document.getElementById("vlan-view"),
+    heatmapToggle: document.getElementById("heatmap-toggle"), heatmapWindow: document.getElementById("heatmap-window"),
+    heatmapShowHealthy: document.getElementById("heatmap-show-healthy"),
+    heatmapShowCritical: document.getElementById("heatmap-show-critical"),
+    heatmapMenuSummary: document.getElementById("heatmap-menu-summary"),
+    heatmapMinLoss: document.getElementById("heatmap-min-loss"),
+    heatmapMinLossSlider: document.getElementById("heatmap-min-loss-slider"),
     arrangeHierarchy: document.getElementById("arrange-hierarchy"),
     arrangeSwitch: document.getElementById("arrange-switch"), arrangeSubnet: document.getElementById("arrange-subnet"),
     arrangeVlan: document.getElementById("arrange-vlan"), panTool: document.getElementById("pan-tool"),
@@ -62,8 +77,16 @@
     boxSelectTool: document.getElementById("box-select-tool"),
     toast: document.getElementById("toast-region"), search: document.getElementById("node-search"),
     focusSearch: document.getElementById("focus-search"), hideManual: document.getElementById("hide-manual"),
+    hideNoIp: document.getElementById("hide-no-ip"),
     labelMode: document.getElementById("label-mode"),
     themeToggle: document.getElementById("theme-toggle"),
+    siteSelector: document.getElementById("site-selector"),
+    livenessStatus: document.getElementById("liveness-status"),
+    mqttClientsButton: document.getElementById("mqtt-clients-button"),
+    mqttClientsPanel: document.getElementById("mqtt-clients-panel"),
+    mqttClientsList: document.getElementById("mqtt-clients-list"),
+    mqttConnectionState: document.getElementById("mqtt-connection-state"),
+    pendingClientCount: document.getElementById("pending-client-count"),
   };
 
   const escapeHtml = (value) => String(value ?? "")
@@ -78,6 +101,11 @@
     catch (_) { return false; }
   }
 
+  function readSitePreference() {
+    try { return sessionStorage.getItem("status-visualizer-site") || "local"; }
+    catch (_) { return "local"; }
+  }
+
   function readThemePreference() {
     try { return localStorage.getItem("topology-theme") === "light" ? "light" : "dark"; }
     catch (_) { return "dark"; }
@@ -89,7 +117,8 @@
     const light = state.theme === "light";
     el.themeToggle.setAttribute("aria-pressed", String(light));
     el.themeToggle.setAttribute("aria-label", `Switch to ${light ? "dark" : "light"} mode`);
-    el.themeToggle.textContent = light ? "Dark mode" : "Light mode";
+    el.themeToggle.querySelector(".theme-icon").textContent = light ? "☾" : "☀";
+    el.themeToggle.querySelector("span:last-child").textContent = light ? "Dark theme" : "Light theme";
   }
 
   function toggleTheme() {
@@ -105,6 +134,38 @@
     } catch (_) { return true; }
   }
 
+  function readHeatmapPreference() {
+    try { return localStorage.getItem("topology-health-heatmap") === "true"; }
+    catch (_) { return false; }
+  }
+
+  function readHeatmapWindowPreference() {
+    try {
+      const value = localStorage.getItem("topology-health-window");
+      return ["5m", "15m", "1h", "12h", "24h"].includes(value) ? value : "15m";
+    } catch (_) { return "15m"; }
+  }
+
+  function readHeatmapLayerPreference(key) {
+    try {
+      const value = localStorage.getItem(key);
+      return value === null ? true : value === "true";
+    } catch (_) { return true; }
+  }
+
+  function normalizeHeatmapMinLoss(raw) {
+    if (raw === "" || raw === null || raw === undefined) return 0;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.min(99.9, Math.max(0.1, Math.round(value * 10) / 10));
+  }
+
+  function readHeatmapMinLossPreference() {
+    try {
+      return normalizeHeatmapMinLoss(localStorage.getItem("topology-health-min-loss"));
+    } catch (_) { return 0; }
+  }
+
   function readInventoryPreference() {
     try { return localStorage.getItem("topology-inventory-collapsed") === "true"; }
     catch (_) { return false; }
@@ -117,15 +178,16 @@
       return {
         hiddenTypes: new Set(Array.isArray(parsed.hiddenTypes) ? parsed.hiddenTypes.map(String) : []),
         hideManual: Boolean(parsed.hideManual),
+        hideNoIp: Boolean(parsed.hideNoIp),
         labelMode: allowedModes.has(parsed.labelMode) ? parsed.labelMode : "both",
       };
-    } catch (_) { return {hiddenTypes: new Set(), hideManual: false, labelMode: "both"}; }
+    } catch (_) { return {hiddenTypes: new Set(), hideManual: false, hideNoIp: false, labelMode: "both"}; }
   }
 
   function saveDisplayPreferences() {
     try {
       localStorage.setItem("topology-display-options", JSON.stringify({
-        hiddenTypes: [...state.hiddenTypes], hideManual: state.hideManual, labelMode: state.labelMode,
+        hiddenTypes: [...state.hiddenTypes], hideManual: state.hideManual, hideNoIp: state.hideNoIp, labelMode: state.labelMode,
       }));
     } catch (_) { /* Preference remains session-only. */ }
   }
@@ -139,8 +201,16 @@
   }
 
   async function api(path, options = {}) {
-    const headers = options.body ? {"Content-Type": "application/json", ...(options.headers || {})} : options.headers;
-    const response = await fetch(path, {...options, headers});
+    const requestSite = options.siteId || state.siteId;
+    const isSiteScoped = ["/api/topology", "/api/devices", "/api/edges", "/api/layouts", "/api/import", "/api/liveness", "/api/exports"]
+      .some((prefix) => path.startsWith(prefix));
+    const headers = {
+      ...(options.body ? {"Content-Type": "application/json"} : {}),
+      ...(isSiteScoped ? {"X-Status-Visualizer-Site": requestSite} : {}),
+      ...(options.headers || {}),
+    };
+    const {siteId: _siteId, ...fetchOptions} = options;
+    const response = await fetch(path, {...fetchOptions, headers});
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
       try {
@@ -158,14 +228,21 @@
     return visibleTopology(state.nodes, state.edges, {
       hiddenTypes: state.hiddenTypes,
       hideManual: state.hideManual,
+      hideNoIp: state.hideNoIp,
       collapsedGroupIds: state.collapsedUnmanagedGroups,
     });
   }
   function isInfrastructure(node) { return INFRASTRUCTURE_TYPES.has(node.node_type); }
+  function isManualSource(node) { return ["local", "manual"].includes(node.source); }
   function nodeStatus(node) {
+    if (node.health?.online === true) return "online";
+    if (node.health?.online === false) return "offline";
     return ["online", "offline"].includes(node.liveness_state) ? node.liveness_state : "unknown";
   }
   function statusLabel(node) {
+    if (state.siteId !== "local" && !state.livenessAvailable) {
+      return state.livenessStale ? "Remote status stale" : "Remote status unavailable";
+    }
     return nodeStatus(node) === "online" ? "Online" : nodeStatus(node) === "offline" ? "No ping reply" : "Not checked";
   }
   function nodeVlanLabel(node) {
@@ -176,6 +253,17 @@
     const vlan = state.vlanView ? nodeVlanLabel(node) : "";
     const label = nodeDisplayLabel(node, state.labelMode);
     return `${label.primary}${label.secondary ? `, ${label.secondary}` : ""}, ${statusLabel(node)}${vlan ? `, ${vlan}` : ""}`;
+  }
+
+  function relativeTime(value) {
+    const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+    if (!value || !Number.isFinite(elapsed)) return "—";
+    const seconds = Math.round(elapsed / 1000);
+    if (seconds < 60) return `${seconds} sec ago`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.round(minutes / 60);
+    return hours < 24 ? `${hours} hr ago` : `${Math.round(hours / 24)} day ago`;
   }
 
   function vlanDecorationMarkup(decoration) {
@@ -214,53 +302,236 @@
   }
 
   async function loadTopology(showError = true) {
-    try { applyTopology(await api("/api/topology")); }
+    const requestSite = state.siteId;
+    const requestEpoch = state.siteEpoch;
+    try {
+      const topology = await api("/api/topology", {siteId: requestSite});
+      if (state.siteId !== requestSite) return;
+      if (state.siteEpoch !== requestEpoch) return;
+      applyTopology(topology);
+    }
     catch (error) { if (showError) toast(`Could not load topology: ${error.message}`, true); }
   }
 
+  function siteIdentifier(site) { return String(site.id || site.site_id || site.client_id || ""); }
+  function siteLabel(site) { return String(site.display_name || site.name || (siteIdentifier(site) === "local" ? "Local" : siteIdentifier(site))); }
+  function siteImportMarker(site) { return site.last_imported_at || site.imported_at || site.last_snapshot_hash || null; }
+
+  function renderSites() {
+    const sites = state.sites.length ? state.sites : [{id: "local", display_name: "Local"}];
+    if (!sites.some((site) => siteIdentifier(site) === state.siteId)) {
+      state.siteId = "local";
+      try { sessionStorage.setItem("status-visualizer-site", state.siteId); }
+      catch (_) { /* Selection remains in memory for this tab. */ }
+    }
+    el.siteSelector.innerHTML = sites.map((site) => {
+      const id = siteIdentifier(site);
+      return `<option value="${escapeHtml(id)}" ${id === state.siteId ? "selected" : ""}>${escapeHtml(siteLabel(site))}</option>`;
+    }).join("");
+    syncSiteControls();
+  }
+
+  function syncSiteControls() {
+    const remote = state.siteId !== "local";
+    el.checkLiveness.disabled = remote;
+    el.checkLiveness.hidden = remote;
+    el.checkLiveness.querySelector("span:last-child").textContent = "Check device status";
+    el.checkLiveness.title = remote ? "This remote site may not be reachable for ICMP from the central server." : "";
+    el.livenessStatus.hidden = !remote;
+  }
+
+  function clientErrorMarkup(client) {
+    return client.last_error ? `<p class="client-error">${escapeHtml(client.last_error)}</p>` : "";
+  }
+
+  function captureMqttClientEditorState() {
+    const drafts = new Map();
+    let focusedClientId = null;
+    let selectionStart = 0;
+    let selectionEnd = 0;
+    el.mqttClientsList.querySelectorAll(".client-card").forEach((card) => {
+      const clientId = card.dataset.clientId;
+      const input = card.querySelector(".client-name");
+      if (!clientId || !input) return;
+      drafts.set(clientId, input.value);
+      if (input === document.activeElement) {
+        focusedClientId = clientId;
+        selectionStart = input.selectionStart ?? input.value.length;
+        selectionEnd = input.selectionEnd ?? input.value.length;
+      }
+    });
+    return {drafts, focusedClientId, selectionStart, selectionEnd};
+  }
+
+  function renderMqttClients(editorState = null) {
+    const clients = state.mqttClients;
+    const pendingCount = clients.filter((client) => client.state === "pending").length;
+    el.pendingClientCount.hidden = pendingCount === 0;
+    el.pendingClientCount.textContent = String(pendingCount);
+    el.mqttClientsButton.classList.toggle("has-pending", pendingCount > 0);
+    const configured = Boolean(state.mqttStatus.configured);
+    const connected = Boolean(state.mqttStatus.connected);
+    el.mqttConnectionState.className = `client-connection-state ${connected ? "is-connected" : ""}`;
+    el.mqttConnectionState.textContent = !configured ? "MQTT is not configured" : connected ? "MQTT connected" : "MQTT disconnected";
+    if (!clients.length) {
+      el.mqttClientsList.innerHTML = '<p class="client-empty">No MQTT clients discovered yet.</p>';
+      return;
+    }
+    el.mqttClientsList.innerHTML = clients.map((client) => {
+      const clientId = String(client.client_id || client.id || "");
+      const currentName = client.display_name || "";
+      const draftName = editorState?.drafts?.get(clientId);
+      const inputValue = draftName !== undefined ? draftName : currentName;
+      const stateLabel = String(client.state || "pending");
+      const seen = client.last_seen_at ? `Last seen ${fmtTime(client.last_seen_at)}` : "Not seen yet";
+      return `<article class="client-card" data-client-id="${escapeHtml(clientId)}">`
+        + `<div class="client-card-heading"><div><strong>${escapeHtml(currentName || "Pending client")}</strong><code>${escapeHtml(clientId)}</code></div><span class="client-state client-state-${escapeHtml(stateLabel)}">${escapeHtml(stateLabel)}</span></div>`
+        + `<label><span>Friendly name</span><input class="client-name" type="text" maxlength="100" value="${escapeHtml(inputValue)}" placeholder="Branch office"></label>`
+        + `<p class="client-seen">${escapeHtml(seen)}</p>${clientErrorMarkup(client)}`
+        + `<div class="client-actions"><button class="text-button client-approve" type="button">${stateLabel === "approved" ? "Save name" : "Approve"}</button>`
+        + `<button class="text-button client-block" type="button">${stateLabel === "blocked" ? "Blocked" : "Block"}</button></div></article>`;
+    }).join("");
+    el.mqttClientsList.querySelectorAll(".client-card").forEach((card) => {
+      const clientId = card.dataset.clientId;
+      card.querySelector(".client-approve").addEventListener("click", () => updateMqttClient(clientId, "approved", card));
+      card.querySelector(".client-block").addEventListener("click", () => updateMqttClient(clientId, "blocked", card));
+    });
+    if (editorState?.focusedClientId) {
+      const input = el.mqttClientsList.querySelector(
+        `.client-card[data-client-id="${CSS.escape(editorState.focusedClientId)}"] .client-name`,
+      );
+      if (input) {
+        input.focus();
+        input.setSelectionRange(editorState.selectionStart, editorState.selectionEnd);
+      }
+    }
+  }
+
+  async function updateMqttClient(clientId, nextState, card) {
+    const displayName = card.querySelector(".client-name").value.trim();
+    if (nextState === "approved" && !displayName) {
+      toast("Enter a friendly name before approving this client.", true);
+      card.querySelector(".client-name").focus();
+      return;
+    }
+    const buttons = [...card.querySelectorAll("button")];
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      await api(`/api/mqtt/clients/${clientId}`, {
+        method: "PATCH",
+        headers: {"X-Status-Visualizer-Request": "1"},
+        body: JSON.stringify({display_name: displayName || null, state: nextState}),
+      });
+      toast(nextState === "approved" ? `Approved ${displayName}.` : "Client blocked.");
+      await refreshSitesAndClients();
+    } catch (error) {
+      toast(`Could not update client: ${error.message}`, true);
+    } finally { buttons.forEach((button) => { button.disabled = false; }); }
+  }
+
+  async function refreshSitesAndClients(initial = false) {
+    try {
+      const [sites, clientData] = await Promise.all([api("/api/sites"), api("/api/mqtt/clients")]);
+      const previousSite = state.siteId;
+      const previousMarker = state.selectedImportMarker;
+      state.sites = Array.isArray(sites) ? sites : [];
+      state.mqttClients = Array.isArray(clientData.clients) ? clientData.clients : [];
+      state.mqttStatus = clientData.mqtt || {};
+      renderSites();
+      const editorState = el.mqttClientsPanel.hidden ? null : captureMqttClientEditorState();
+      renderMqttClients(editorState);
+      const selectionFellBack = state.siteId !== previousSite;
+      const selectedSite = state.sites.find((site) => siteIdentifier(site) === state.siteId);
+      const nextMarker = selectedSite ? siteImportMarker(selectedSite) : null;
+      state.selectedImportMarker = nextMarker;
+      if (!initial && selectionFellBack) {
+        state.siteEpoch += 1;
+        state.fittedForNodes = false;
+        clearSelection();
+        await loadTopology(false);
+        await loadLiveness(false);
+      } else if (!initial && nextMarker && previousMarker !== nextMarker) {
+        await loadTopology(false);
+      }
+    } catch (error) {
+      if (initial) toast(`Could not load sites: ${error.message}`, true);
+    }
+  }
+
+  async function selectSite(siteId) {
+    if (!siteId || siteId === state.siteId) return;
+    state.siteId = siteId;
+    state.siteEpoch += 1;
+    state.selectedImportMarker = siteImportMarker(state.sites.find((site) => siteIdentifier(site) === siteId) || {});
+    state.fittedForNodes = false;
+    clearSelection();
+    try { sessionStorage.setItem("status-visualizer-site", state.siteId); }
+    catch (_) { /* Selection remains in memory for this tab. */ }
+    syncSiteControls();
+    await loadTopology();
+    await loadLiveness(false);
+  }
+
   function applyLiveness(data) {
+    state.livenessAvailable = data.available !== false;
+    state.livenessStale = Boolean(data.stale);
+    if (state.siteId !== "local") {
+      el.livenessStatus.hidden = false;
+      el.livenessStatus.querySelector("span").textContent = state.livenessAvailable
+        ? `Remote status checked ${fmtTime(data.checked_at)}`
+        : state.livenessStale && data.checked_at
+          ? `Remote status stale (last checked ${fmtTime(data.checked_at)})`
+          : "Remote status unavailable";
+    }
     const byId = new Map((data.devices || []).map((item) => [item.device_id, item]));
     state.nodes = state.nodes.map((node) => {
       const status = byId.get(node.id);
       return status ? {
         ...node,
-        liveness_state: status.state,
+        health: {...status},
+        liveness_state: status.state || (status.online === true ? "online" : status.online === false ? "offline" : node.liveness_state),
         liveness_checked_at: status.checked_at,
-        liveness_latency_ms: status.latency_ms,
+        liveness_latency_ms: status.current_rtt_ms ?? status.latency_ms,
       } : node;
     });
     renderInventory();
-    el.nodeLayer.querySelectorAll("[data-node-id]").forEach((card) => {
-      const node = nodeById(card.dataset.nodeId);
-      if (!node) return;
-      card.classList.remove("status-online", "status-offline", "status-unknown");
-      card.classList.add(`status-${nodeStatus(node)}`);
-      card.setAttribute("aria-label", nodeAriaLabel(node));
-    });
+    renderGraph();
     if (state.panelMode === "node" && state.selectedNodeId) renderNodeDetails(state.selectedNodeId);
   }
 
   async function loadLiveness(showError = false) {
-    try { applyLiveness(await api("/api/liveness")); }
+    const requestSite = state.siteId;
+    const requestEpoch = state.siteEpoch;
+    try {
+      const liveness = await api("/api/liveness", {siteId: requestSite});
+      if (state.siteId !== requestSite) return;
+      if (state.siteEpoch !== requestEpoch) return;
+      applyLiveness(liveness);
+    }
     catch (error) { if (showError) toast(`Could not load status: ${error.message}`, true); }
   }
 
   async function checkLiveness() {
+    if (state.siteId !== "local") return;
+    const requestSite = state.siteId;
     el.checkLiveness.disabled = true;
-    el.checkLiveness.textContent = "Checking...";
+    el.checkLiveness.querySelector("span:last-child").textContent = "Checking...";
     try {
       const result = await api("/api/liveness/check", {
         method: "POST",
         body: "{}",
         headers: {"X-Status-Visualizer-Request": "1"},
+        siteId: requestSite,
       });
+      if (state.siteId !== requestSite) return;
       applyLiveness(result);
       const checked = result.check?.checked || 0;
       toast(`Checked ${checked} addresses: ${result.check.online} online, ${result.check.offline} no reply`);
-    } catch (error) { toast(`Status check failed: ${error.message}`, true); }
+    } catch (error) {
+      if (state.siteId === requestSite) toast(`Status check failed: ${error.message}`, true);
+    }
     finally {
-      el.checkLiveness.disabled = false;
-      el.checkLiveness.textContent = "Check status";
+      syncSiteControls();
     }
   }
 
@@ -282,9 +553,9 @@
     const label = el.importState.querySelector("span");
     if (state.importStatus.imported_at) {
       el.importState.className = "service-state is-live";
-      label.textContent = `Lantopolog - ${state.importStatus.nodes || 0} nodes`;
+      label.textContent = `LanTopoLog · ${state.importStatus.nodes || 0} nodes`;
     } else {
-      el.importState.className = "service-state is-connecting";
+      el.importState.className = "service-state";
       label.textContent = "No export imported";
     }
   }
@@ -292,7 +563,7 @@
   function filteredNodes() {
     const query = state.search.toLowerCase();
     return state.nodes.filter((node) => {
-      const category = node.source === "local" ? "manual" : isInfrastructure(node) ? "infrastructure" : "endpoint";
+      const category = isManualSource(node) ? "manual" : isInfrastructure(node) ? "infrastructure" : "endpoint";
       const searchable = [node.name, node.address, node.mac_address, node.node_type,
         ...Object.values(node.metadata || {})].join(" ").toLowerCase();
       return (state.filter === "all" || state.filter === category) && (!query || searchable.includes(query));
@@ -333,7 +604,6 @@
   }
 
   function renderVlanDecorations() {
-    el.vlanLayer.replaceChildren();
     el.vlanLegend.replaceChildren();
     const visibleNodes = currentVisibleTopology().nodes;
     const decorations = visibleNodes
@@ -341,7 +611,6 @@
       .filter(Boolean);
     const hasAssignments = decorations.length > 0;
     const visible = state.vlanView && hasAssignments;
-    el.vlanLayer.hidden = true;
     el.vlanLegend.hidden = !visible;
     if (!visible) return;
 
@@ -376,6 +645,70 @@
       item.append(swatch, label);
       el.vlanLegend.append(item);
     }
+  }
+
+  function appendHeatmapGradient(defs, band) {
+    const gradient = document.createElementNS(SVG_NS, "radialGradient");
+    gradient.setAttribute("id", `topology-heatmap-gradient-${band.level}`);
+    gradient.setAttribute("cx", "50%");
+    gradient.setAttribute("cy", "50%");
+    gradient.setAttribute("r", "50%");
+    const stops = band.vivid
+      ? [["0%", "0.82"], ["38%", "0.34"], ["72%", "0.12"], ["100%", "0"]]
+      : [["0%", "0.9"], ["42%", "0.38"], ["100%", "0"]];
+    for (const [offset, stopOpacity] of stops) {
+      const stop = document.createElementNS(SVG_NS, "stop");
+      stop.setAttribute("offset", offset);
+      stop.setAttribute("stop-color", band.color);
+      stop.setAttribute("stop-opacity", stopOpacity);
+      gradient.append(stop);
+    }
+    defs.append(gradient);
+  }
+
+  function renderHeatmapOverlay() {
+    el.heatmapLayer.replaceChildren();
+    if (!state.heatmapEnabled) {
+      el.heatmapLayer.hidden = true;
+      return;
+    }
+    el.heatmapLayer.hidden = false;
+    const defs = document.createElementNS(SVG_NS, "defs");
+    const filter = document.createElementNS(SVG_NS, "filter");
+    filter.setAttribute("id", "topology-heatmap-soften");
+    filter.setAttribute("x", "-60%");
+    filter.setAttribute("y", "-60%");
+    filter.setAttribute("width", "220%");
+    filter.setAttribute("height", "220%");
+    const blur = document.createElementNS(SVG_NS, "feGaussianBlur");
+    blur.setAttribute("stdDeviation", "24");
+    filter.append(blur);
+    defs.append(filter);
+    for (const band of window.TopologyUtils.getHeatmapLossBands()) {
+      appendHeatmapGradient(defs, band);
+    }
+    const healthyGroup = document.createElementNS(SVG_NS, "g");
+    healthyGroup.setAttribute("class", "heatmap-sources-healthy");
+    const lossGroup = document.createElementNS(SVG_NS, "g");
+    lossGroup.setAttribute("class", "heatmap-sources-loss");
+    lossGroup.setAttribute("filter", "url(#topology-heatmap-soften)");
+    for (const node of currentVisibleTopology().nodes) {
+      const source = heatmapSource(node.health, state.heatmapWindow);
+      if (!source) continue;
+      if (!heatmapOverlayVisible(source, node.health, {
+        showHealthy: state.heatmapShowHealthy,
+        showCritical: state.heatmapShowCritical,
+      })) continue;
+      if (!heatmapGlowVisible(node.health, state.heatmapWindow, state.heatmapMinLoss)) continue;
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("cx", String(node.x * STAGE_WIDTH));
+      circle.setAttribute("cy", String(node.y * STAGE_HEIGHT));
+      circle.setAttribute("r", String(source.radius));
+      circle.setAttribute("fill", `url(#topology-heatmap-gradient-${source.level})`);
+      circle.setAttribute("opacity", String(source.opacity));
+      (source.vivid ? healthyGroup : lossGroup).append(circle);
+    }
+    el.heatmapLayer.append(defs, healthyGroup, lossGroup);
   }
 
   function renderGraph() {
@@ -420,7 +753,8 @@
       if (vlanDecoration) button.style.setProperty("--node-vlan-color", vlanDecoration.color);
       button.setAttribute("aria-label", nodeAriaLabel(node));
       const displayLabel = nodeDisplayLabel(node, state.labelMode);
-      button.innerHTML = `<span class="node-symbol">${topologyIcon(icon)}</span><span class="node-copy">`
+      const symbolMarkup = shape === "text" ? "" : `<span class="node-symbol">${topologyIcon(icon)}</span>`;
+      button.innerHTML = `${symbolMarkup}<span class="node-copy">`
         + `<strong>${escapeHtml(displayLabel.primary)}</strong>${displayLabel.secondary ? `<span>${escapeHtml(displayLabel.secondary)}</span>` : ""}</span>${vlanDecorationMarkup(vlanDecoration)}`;
       button.addEventListener("pointerdown", startNodeDrag);
       button.addEventListener("keydown", (event) => {
@@ -448,6 +782,7 @@
       }
     }
     updateGraphPositions();
+    renderHeatmapOverlay();
   }
 
   function updateGraphPositions() {
@@ -473,6 +808,7 @@
       ));
     });
     renderVlanDecorations();
+    renderHeatmapOverlay();
   }
 
   function renderMetadata(container, metadata) {
@@ -514,7 +850,6 @@
     state.selectedNodeId = id;
     state.selectedEdgeId = null;
     state.panelMode = "node";
-    syncSelection();
     renderGraph();
     renderNodeDetails(id);
   }
@@ -532,7 +867,6 @@
       state.panelMode = null;
       hidePanel(false);
     }
-    syncSelection();
     renderGraph();
   }
 
@@ -589,6 +923,7 @@
         && !(type === "other" && state.hiddenTypes.has("unknown"));
     });
     el.hideManual.checked = state.hideManual;
+    el.hideNoIp.checked = state.hideNoIp;
     el.labelMode.value = state.labelMode;
   }
 
@@ -634,7 +969,7 @@
       hiddenTypes.delete("unknown");
     }
     state.hiddenTypes = hiddenTypes;
-    if (["local", "manual"].includes(node.source)) state.hideManual = false;
+    if (isManualSource(node)) state.hideManual = false;
     const collapsed = new Set(state.collapsedUnmanagedGroups);
     collapsed.forEach((groupId) => {
       if (unmanagedGroupChildren(state.nodes, state.edges, groupId).includes(id)) collapsed.delete(groupId);
@@ -672,17 +1007,33 @@
     if (!node) return;
     const connections = state.edges.filter((edge) => edge.source_id === id || edge.target_id === id);
     const ports = state.interfaces.filter((item) => item.device_id === id);
+    const health = node.health;
+    const online = nodeStatus(node) === "online";
+    const windowLabels = {"5m": "5 min", "15m": "15 min", "1h": "1 hour", "12h": "12 hours", "24h": "24 hours"};
+    const lossRows = ["5m", "15m", "1h", "12h", "24h"].map((windowName) => {
+      const value = healthWindowValue(health, windowName);
+      const displayed = value.hasData ? `${value.loss.toFixed(1)}%${value.partial ? " (partial)" : ""}` : "—";
+      const selected = state.heatmapEnabled && state.heatmapWindow === windowName ? " health-window-selected" : "";
+      return `<div class="detail-row${selected}"><dt>${windowLabels[windowName]}</dt><dd>${displayed}</dd></div>`;
+    }).join("");
     el.detail.hidden = false;
     el.detailContent.innerHTML = `<div class="panel-header"><div><h2>${escapeHtml(node.name)}</h2>`
       + `<p>${escapeHtml(node.address || node.mac_address || "No address")}</p></div>`
       + '<button class="close-panel" type="button" aria-label="Close panel">x</button></div>'
       + `<div class="panel-body"><div class="status-banner"><i class="status-${nodeStatus(node)}"></i><div><strong>${statusLabel(node)}</strong>`
-      + `<span>${node.liveness_checked_at ? `Checked ${fmtTime(node.liveness_checked_at)}${node.liveness_latency_ms != null ? ` - ${node.liveness_latency_ms} ms` : ""}` : "No ICMP check yet"}</span></div></div>`
+      + `<span>${node.liveness_checked_at ? `Checked ${fmtTime(node.liveness_checked_at)}${node.liveness_latency_ms != null ? ` - ${node.liveness_latency_ms} ms` : ""}` : state.siteId !== "local" && !state.livenessAvailable ? statusLabel(node) : "No ICMP check yet"}</span></div></div>`
       + `<dl class="detail-list"><div class="detail-row"><dt>Type</dt><dd>${escapeHtml(node.node_type)}</dd></div>`
       + `<div class="detail-row"><dt>Visual</dt><dd>${escapeHtml(resolveIconType(node))} / ${escapeHtml(node.node_shape || "icon")}</dd></div>`
       + `<div class="detail-row"><dt>MAC</dt><dd>${escapeHtml(node.mac_address || "-")}</dd></div>`
       + `<div class="detail-row"><dt>Source</dt><dd>${node.source === "lantopolog" ? "Lantopolog export" : "Manual"}</dd></div>`
       + `<div class="detail-row"><dt>Known ports</dt><dd>${ports.length}</dd></div></dl>`
+      + '<h3 class="section-title">Connectivity</h3><dl class="detail-list connectivity-list">'
+      + `<div class="detail-row"><dt>Status</dt><dd>${health?.online === true ? "Online" : health?.online === false ? "Offline" : "Not checked"}</dd></div>`
+      + `<div class="detail-row"><dt>Current RTT</dt><dd>${online && health?.current_rtt_ms != null ? `${Number(health.current_rtt_ms).toFixed(1)} ms` : "—"}</dd></div>`
+      + `${!online && health?.last_rtt_ms != null ? `<div class="detail-row"><dt>Last RTT</dt><dd>${Number(health.last_rtt_ms).toFixed(1)} ms</dd></div>` : ""}`
+      + `<div class="detail-row"><dt>Last response</dt><dd>${relativeTime(health?.last_success_at)}</dd></div>`
+      + `<div class="detail-row"><dt>Monitoring</dt><dd class="monitoring-state">${health?.monitoring_state ? escapeHtml(health.monitoring_state) : "—"}</dd></div></dl>`
+      + `<h3 class="section-title">Packet loss</h3><dl class="detail-list packet-loss-list">${lossRows}</dl>`
       + `${node.notes ? `<h3 class="section-title">Notes</h3><div class="source-callout">${escapeHtml(node.notes)}</div>` : ""}`
       + `<h3 class="section-title">Connections</h3><div class="connection-list">${connections.length
         ? connections.map((edge) => { const other = nodeById(edge.source_id === id ? edge.target_id : edge.source_id); return `<button class="connection-item" type="button" data-edge-id="${edge.id}">${escapeHtml(other?.name || "Unknown")}${edge.label ? ` - ${escapeHtml(edge.label)}` : ""}</button>`; }).join("")
@@ -730,8 +1081,15 @@
   function renderNodeEditor(node = null, error = "") {
     const current = node || {
       name: "", address: "", notes: "", x: 0.5, y: 0.5, node_type: "unknown",
-      icon_type: "auto", node_shape: "icon", mac_address: "", locked: true,
+      icon_type: "auto", node_shape: "icon", mac_address: "", locked: true, metadata: {},
     };
+    const metadata = current.metadata || {};
+    const canEditVlans = !node || isManualSource(current);
+    const vlanFields = canEditVlans
+      ? `<div class="form-row"><label><span>Access VLAN</span><input id="edit-vlan" type="text" inputmode="numeric" maxlength="4" value="${escapeHtml(metadata.VLAN || "")}" placeholder="20"></label>`
+        + `<label><span>Tagged VLANs</span><input id="edit-vlans" type="text" inputmode="numeric" maxlength="120" value="${escapeHtml(metadata.VLANs || "")}" placeholder="20, 30"></label></div>`
+        + '<p class="form-help">Use VLAN IDs from 1-4094. Separate tagged VLANs with commas.</p>'
+      : "";
     state.panelMode = "editor";
     el.detail.hidden = false;
     el.detailContent.innerHTML = `<div class="panel-header"><div><h2>${node ? "Edit node" : "Add node"}</h2><p>Topology inventory</p></div>`
@@ -741,7 +1099,9 @@
       + `<div class="form-row"><label><span>IP or hostname</span><input id="edit-address" type="text" maxlength="253" value="${escapeHtml(current.address || "")}"></label>`
       + `<label><span>Device type</span><select id="edit-type">${optionMarkup(["unknown", "router", "switch", "access-point", "server", "workstation", "printer", "phone", "other"], current.node_type)}</select></label></div>`
       + `<div class="form-row"><label><span>Icon</span><select id="edit-icon">${optionMarkup(ICON_TYPES, current.icon_type || "auto", {auto: "Automatic from type", "access-point": "Access point"})}</select></label>`
-      + `<label><span>Shape</span><select id="edit-shape">${optionMarkup(SHAPES, current.node_shape || "icon", {icon: "Icon + label", card: "Info card", circle: "Circle"})}</select></label></div>`
+      + `<label><span>Shape</span><select id="edit-shape">${optionMarkup(SHAPES, current.node_shape || "icon", {icon: "Icon + label", card: "Info card", circle: "Circle", text: "Text label"})}</select></label></div>`
+      + vlanFields
+      + '<p class="form-help">Text label nodes show only their display name and remain draggable and selectable.</p>'
       + `<label><span>MAC address</span><input id="edit-mac" type="text" maxlength="32" value="${escapeHtml(current.mac_address || "")}"></label>`
       + `<label><span>Notes</span><textarea id="edit-notes" maxlength="2000">${escapeHtml(current.notes || "")}</textarea></label>`
       + `<label class="toggle"><span>Preserve edits on re-import</span><input id="edit-locked" type="checkbox" ${current.locked ? "checked" : ""}></label>`
@@ -764,6 +1124,16 @@
       locked: document.getElementById("edit-locked").checked,
     };
     try {
+      const accessVlanInput = document.getElementById("edit-vlan");
+      if (accessVlanInput) {
+        const metadata = {...(current.metadata || {})};
+        const accessVlans = normalizeManualVlanIds(accessVlanInput.value);
+        const taggedVlans = normalizeManualVlanIds(document.getElementById("edit-vlans").value);
+        if (accessVlans.ids.length > 1) throw new Error("Access VLAN must contain one VLAN ID");
+        if (accessVlans.value) metadata.VLAN = accessVlans.value; else delete metadata.VLAN;
+        if (taggedVlans.value) metadata.VLANs = taggedVlans.value; else delete metadata.VLANs;
+        data.metadata = metadata;
+      }
       const saved = current.id
         ? await api(`/api/devices/${current.id}`, {method: "PUT", body: JSON.stringify(data)})
         : await api("/api/devices", {method: "POST", body: JSON.stringify(data)});
@@ -822,7 +1192,7 @@
     state.connecting = false;
     state.connectSourceId = null;
     el.connectButton.setAttribute("aria-pressed", "false");
-    el.connectButton.textContent = "Connect nodes";
+    el.connectButton.textContent = "Connect";
     el.viewport.classList.remove("is-connecting");
     updateModeHint();
     renderGraph();
@@ -993,25 +1363,37 @@
   }
 
   async function arrangeSubnetLayout() {
-    if (!state.nodes.length) return;
-    await saveLayout(arrangeNodesBySubnet(state.nodes), "Arranged topology into subnet groups");
+    const {nodes} = currentVisibleTopology();
+    if (!nodes.length) {
+      toast("No visible devices to arrange", true);
+      return;
+    }
+    await saveLayout(arrangeNodesBySubnet(nodes), "Arranged visible devices into subnet groups");
     closeArrangeMenu();
   }
 
   async function arrangeSwitchLayout() {
-    if (!state.nodes.length) return;
-    await saveLayout(arrangeNodesBySwitch(state.nodes, state.edges), "Arranged devices around their switches");
+    const {nodes, edges} = currentVisibleTopology();
+    if (!nodes.length) {
+      toast("No visible devices to arrange", true);
+      return;
+    }
+    await saveLayout(arrangeNodesBySwitch(nodes, edges), "Arranged visible devices around their switches");
     closeArrangeMenu();
   }
 
   async function arrangeVlanLayout() {
-    if (!state.nodes.length) return;
-    const groups = vlanGroups(state.nodes, state.interfaces, state.vlans);
+    const {nodes} = currentVisibleTopology();
+    if (!nodes.length) {
+      toast("No visible devices to arrange", true);
+      return;
+    }
+    const groups = vlanGroups(nodes, state.interfaces, state.vlans);
     if (!groups.some((group) => group.key !== "unassigned")) {
       toast("No VLAN assignments are available in this topology", true);
       return;
     }
-    const positions = arrangeNodesByVlan(state.nodes, state.interfaces, state.vlans);
+    const positions = arrangeNodesByVlan(nodes, state.interfaces, state.vlans);
     try {
       await api("/api/devices/positions", {method: "PUT", body: JSON.stringify({positions})});
       state.vlanView = true;
@@ -1025,14 +1407,18 @@
   }
 
   async function arrangeHierarchyLayout() {
-    if (!state.nodes.length) return;
+    const {nodes, edges} = currentVisibleTopology();
+    if (!nodes.length) {
+      toast("No visible devices to arrange", true);
+      return;
+    }
     await saveLayout(
-      arrangeNodesHierarchically(state.nodes, state.edges, {
+      arrangeNodesHierarchically(nodes, edges, {
         snap: state.snapToGrid,
         stepX: GRID_PIXELS / STAGE_WIDTH,
         stepY: GRID_PIXELS / STAGE_HEIGHT,
       }),
-      `Arranged topology by connection level${state.snapToGrid ? " on the grid" : ""}`,
+      `Arranged visible devices by connection level${state.snapToGrid ? " on the grid" : ""}`,
     );
     closeArrangeMenu();
   }
@@ -1050,7 +1436,7 @@
   function toggleSnapGrid() {
     state.snapToGrid = !state.snapToGrid;
     el.snapGrid.setAttribute("aria-pressed", String(state.snapToGrid));
-    el.snapGrid.textContent = `Snap grid: ${state.snapToGrid ? "On" : "Off"}`;
+    el.snapGrid.textContent = `Snap${state.snapToGrid ? " ✓" : ""}`;
     try { localStorage.setItem("topology-snap-grid", String(state.snapToGrid)); } catch (_) { /* Preference remains session-only. */ }
   }
 
@@ -1074,7 +1460,7 @@
 
   function syncVlanViewControl() {
     el.vlanView.setAttribute("aria-pressed", String(state.vlanView));
-    el.vlanView.textContent = `VLAN view: ${state.vlanView ? "On" : "Off"}`;
+    el.vlanView.textContent = `VLAN${state.vlanView ? " ✓" : ""}`;
   }
 
   function toggleVlanView() {
@@ -1082,6 +1468,56 @@
     syncVlanViewControl();
     try { localStorage.setItem("topology-vlan-view", String(state.vlanView)); } catch (_) { /* Preference remains session-only. */ }
     renderGraph();
+  }
+
+  function syncHeatmapControls() {
+    const enabled = state.heatmapEnabled;
+    el.heatmapToggle.checked = enabled;
+    el.heatmapWindow.disabled = !enabled;
+    el.heatmapWindow.value = state.heatmapWindow;
+    el.heatmapShowHealthy.disabled = !enabled;
+    el.heatmapShowCritical.disabled = !enabled;
+    el.heatmapShowHealthy.checked = state.heatmapShowHealthy;
+    el.heatmapShowCritical.checked = state.heatmapShowCritical;
+    el.heatmapMinLoss.disabled = !enabled;
+    el.heatmapMinLossSlider.disabled = !enabled;
+    el.heatmapMinLoss.value = state.heatmapMinLoss > 0 ? String(state.heatmapMinLoss) : "";
+    el.heatmapMinLossSlider.value = String(state.heatmapMinLoss > 0 ? state.heatmapMinLoss : 0.1);
+    el.heatmapMenuSummary.textContent = enabled
+      ? `Loss ✓${state.heatmapMinLoss > 0 ? ` ≥${state.heatmapMinLoss}%` : ""} ▾`
+      : "Loss ▾";
+  }
+
+  function applyHeatmapMinLossChange(rawValue) {
+    state.heatmapMinLoss = normalizeHeatmapMinLoss(rawValue);
+    syncHeatmapControls();
+    try { localStorage.setItem("topology-health-min-loss", String(state.heatmapMinLoss)); } catch (_) { /* Session-only. */ }
+    renderGraph();
+  }
+
+  function onHeatmapToggleChange() {
+    state.heatmapEnabled = el.heatmapToggle.checked;
+    syncHeatmapControls();
+    try { localStorage.setItem("topology-health-heatmap", String(state.heatmapEnabled)); } catch (_) { /* Session-only. */ }
+    renderGraph();
+    if (state.panelMode === "node" && state.selectedNodeId) renderNodeDetails(state.selectedNodeId);
+  }
+
+  function onHeatmapLayerToggleChange() {
+    state.heatmapShowHealthy = el.heatmapShowHealthy.checked;
+    state.heatmapShowCritical = el.heatmapShowCritical.checked;
+    try {
+      localStorage.setItem("topology-health-heatmap-show-healthy", String(state.heatmapShowHealthy));
+      localStorage.setItem("topology-health-heatmap-show-critical", String(state.heatmapShowCritical));
+    } catch (_) { /* Session-only. */ }
+    renderGraph();
+  }
+
+  function selectHeatmapWindow() {
+    state.heatmapWindow = el.heatmapWindow.value;
+    try { localStorage.setItem("topology-health-window", state.heatmapWindow); } catch (_) { /* Session-only. */ }
+    renderGraph();
+    if (state.panelMode === "node" && state.selectedNodeId) renderNodeDetails(state.selectedNodeId);
   }
 
   function updateModeHint() {
@@ -1102,13 +1538,15 @@
   }
 
   async function importFolder(fileList) {
+    const requestSite = state.siteId;
     const selected = [...fileList].filter((file) => EXPORT_FILES.has(file.name.toLowerCase()));
     if (!selected.length) { toast("That folder does not contain a recognized Lantopolog export", true); return; }
     el.importButton.disabled = true;
     el.importButton.textContent = "Importing...";
     try {
       const files = await Promise.all(selected.map(async (file) => ({name: file.name, path: selectedExportPath(file), content: await file.text()})));
-      const result = await api("/api/import/lantopolog", {method: "POST", body: JSON.stringify({files})});
+      const result = await api("/api/import/lantopolog", {method: "POST", body: JSON.stringify({files}), siteId: requestSite});
+      if (state.siteId !== requestSite) return;
       state.fittedForNodes = false;
       await loadTopology(false);
       state.fitted = false;
@@ -1117,7 +1555,7 @@
     } catch (error) { toast(`Import failed: ${error.message}`, true); }
     finally {
       el.importButton.disabled = false;
-      el.importButton.textContent = "Import Lantopolog";
+      el.importButton.textContent = "Import";
       el.importFolder.value = "";
     }
   }
@@ -1200,6 +1638,7 @@
 
   async function saveTopologyPdf() {
     const button = document.getElementById("print-topology");
+    const siteId = state.siteId;
     const visible = currentVisibleTopology();
     if (!visible.nodes.length) {
       toast("There are no visible devices to save.", true);
@@ -1213,6 +1652,7 @@
         headers: {
           "Content-Type": "application/json",
           "X-Status-Visualizer-Request": "1",
+          "X-Status-Visualizer-Site": siteId,
         },
         body: JSON.stringify({
           node_ids: visible.nodes.map((node) => node.id),
@@ -1221,6 +1661,7 @@
           theme: state.theme,
         }),
       });
+      if (state.siteId !== siteId) return;
       if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try { message = (await response.json()).detail || message; }
@@ -1228,6 +1669,7 @@
         throw new Error(message);
       }
       const blob = await response.blob();
+      if (state.siteId !== siteId) return;
       if (!blob.type.startsWith("application/pdf")) throw new Error("The export did not return a PDF");
       const objectUrl = URL.createObjectURL(blob);
       const download = document.createElement("a");
@@ -1240,26 +1682,55 @@
       setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
       toast(`Saved a vector PDF with ${visible.nodes.length} visible devices.`);
     } catch (error) {
-      toast(`Unable to save the diagram PDF: ${error.message}`, true);
+      if (state.siteId === siteId) toast(`Could not save PDF: ${error.message}`, true);
     } finally {
       button.disabled = false;
-      button.textContent = "Save diagram PDF";
+      button.textContent = "Save diagram as PDF";
     }
   }
 
+  function closeContainingMenu(control) {
+    control.closest("details")?.removeAttribute("open");
+  }
+
+  function closeAllMenus() {
+    document.querySelectorAll(".toolbar-menu[open]").forEach((menu) => menu.removeAttribute("open"));
+  }
+
   el.importButton.addEventListener("click", () => el.importFolder.click());
-  el.checkLiveness.addEventListener("click", checkLiveness);
-  el.themeToggle.addEventListener("click", toggleTheme);
+  el.checkLiveness.addEventListener("click", () => {
+    closeContainingMenu(el.checkLiveness);
+    checkLiveness();
+  });
+  el.siteSelector.addEventListener("change", (event) => selectSite(event.target.value));
+  el.mqttClientsButton.addEventListener("click", () => {
+    el.mqttClientsPanel.hidden = !el.mqttClientsPanel.hidden;
+    el.mqttClientsButton.setAttribute("aria-expanded", String(!el.mqttClientsPanel.hidden));
+  });
+  document.getElementById("close-mqtt-clients").addEventListener("click", () => {
+    el.mqttClientsPanel.hidden = true;
+    el.mqttClientsButton.setAttribute("aria-expanded", "false");
+  });
+  el.themeToggle.addEventListener("click", () => {
+    toggleTheme();
+    closeContainingMenu(el.themeToggle);
+  });
   document.getElementById("empty-import").addEventListener("click", () => el.importFolder.click());
   el.importFolder.addEventListener("change", () => importFolder(el.importFolder.files));
-  document.getElementById("add-button").addEventListener("click", () => renderNodeEditor());
-  document.getElementById("clear-nodes").addEventListener("click", clearAllNodes);
+  document.getElementById("add-button").addEventListener("click", (event) => {
+    closeContainingMenu(event.currentTarget);
+    renderNodeEditor();
+  });
+  document.getElementById("clear-nodes").addEventListener("click", (event) => {
+    closeContainingMenu(event.currentTarget);
+    clearAllNodes();
+  });
   el.connectButton.addEventListener("click", () => {
     if (state.connecting) { cancelConnect(); return; }
     state.connecting = true;
     state.connectSourceId = null;
     el.connectButton.setAttribute("aria-pressed", "true");
-    el.connectButton.textContent = "Cancel connection";
+    el.connectButton.textContent = "Cancel";
     el.viewport.classList.add("is-connecting");
     el.modeHint.textContent = "Choose the first node to connect";
   });
@@ -1267,6 +1738,22 @@
   el.boxSelectTool.addEventListener("click", () => setTool("select"));
   el.snapGrid.addEventListener("click", toggleSnapGrid);
   el.vlanView.addEventListener("click", toggleVlanView);
+  el.heatmapToggle.addEventListener("change", onHeatmapToggleChange);
+  el.heatmapShowHealthy.addEventListener("change", onHeatmapLayerToggleChange);
+  el.heatmapShowCritical.addEventListener("change", onHeatmapLayerToggleChange);
+  el.heatmapWindow.addEventListener("change", selectHeatmapWindow);
+  el.heatmapMinLossSlider.addEventListener("input", () => {
+    applyHeatmapMinLossChange(el.heatmapMinLossSlider.value);
+  });
+  el.heatmapMinLoss.addEventListener("change", () => {
+    applyHeatmapMinLossChange(el.heatmapMinLoss.value);
+  });
+  el.heatmapMinLoss.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applyHeatmapMinLossChange(el.heatmapMinLoss.value);
+    }
+  });
   el.arrangeHierarchy.addEventListener("click", arrangeHierarchyLayout);
   el.arrangeSwitch.addEventListener("click", arrangeSwitchLayout);
   el.arrangeVlan.addEventListener("click", arrangeVlanLayout);
@@ -1276,7 +1763,10 @@
   el.inventoryToggle.addEventListener("click", toggleInventory);
   document.getElementById("collapse-unmanaged").addEventListener("click", collapseUnmanagedGroups);
   document.getElementById("expand-unmanaged").addEventListener("click", expandUnmanagedGroups);
-  document.getElementById("print-topology").addEventListener("click", saveTopologyPdf);
+  document.getElementById("print-topology").addEventListener("click", (event) => {
+    closeContainingMenu(event.currentTarget);
+    saveTopologyPdf();
+  });
   document.getElementById("zoom-in").addEventListener("click", () => zoom(1.2));
   document.getElementById("zoom-out").addEventListener("click", () => zoom(0.83));
   document.getElementById("zoom-fit").addEventListener("click", fitGraph);
@@ -1291,6 +1781,9 @@
       if (other !== menu) other.removeAttribute("open");
     });
   }));
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".toolbar-menu")) closeAllMenus();
+  });
   document.querySelectorAll("[data-display-type]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const next = new Set(state.hiddenTypes);
     const types = checkbox.dataset.displayType === "other" ? ["other", "unknown"] : [checkbox.dataset.displayType];
@@ -1300,6 +1793,10 @@
   }));
   el.hideManual.addEventListener("change", () => {
     state.hideManual = el.hideManual.checked;
+    applyDisplayOptions();
+  });
+  el.hideNoIp.addEventListener("change", () => {
+    state.hideNoIp = el.hideNoIp.checked;
     applyDisplayOptions();
   });
   el.labelMode.addEventListener("change", () => {
@@ -1316,16 +1813,28 @@
   el.viewport.addEventListener("pointermove", moveViewportGesture);
   el.viewport.addEventListener("pointerup", finishViewportGesture);
   el.viewport.addEventListener("pointercancel", cancelViewportGesture);
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.connecting) clearSelection(); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (document.querySelector(".toolbar-menu[open]")) {
+      closeAllMenus();
+      return;
+    }
+    if (!state.connecting) clearSelection();
+  });
   new ResizeObserver(() => state.fitted ? applyTransform() : fitGraph()).observe(el.viewport);
   window.addEventListener("load", fitGraph, {once: true});
   el.snapGrid.setAttribute("aria-pressed", String(state.snapToGrid));
-  el.snapGrid.textContent = `Snap grid: ${state.snapToGrid ? "On" : "Off"}`;
+  el.snapGrid.textContent = `Snap${state.snapToGrid ? " ✓" : ""}`;
   syncVlanViewControl();
+  syncHeatmapControls();
   applyTheme(state.theme);
   syncDisplayControls();
   syncInventoryControl();
   setTool("pan");
-  loadTopology();
+  refreshSitesAndClients(true).finally(async () => {
+    await loadTopology();
+    await loadLiveness(false);
+  });
   setInterval(() => loadLiveness(false), 10000);
+  setInterval(refreshSitesAndClients, 10000);
 })();

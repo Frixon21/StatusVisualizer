@@ -18,6 +18,7 @@ NODE_SHAPES = {
     "icon": (124, 94),
     "card": (164, 72),
     "circle": (112, 112),
+    "text": (170, 36),
 }
 CONTENT_PADDING = 80
 HEADER_HEIGHT = 72
@@ -197,6 +198,8 @@ def _display_label(node: Any, label_mode: str) -> tuple[str, str]:
     name = safe_pdf_text(node.name)
     address = safe_pdf_text(node.address)
     fallback = name or address or safe_pdf_text(node.node_type) or "Device"
+    if getattr(node, "node_shape", "") == "text":
+        return fallback, ""
     if label_mode == "hostname":
         return fallback, ""
     if label_mode == "ip":
@@ -426,7 +429,6 @@ def _draw_node(
         canvas.setStrokeColor(palette.circle_border)
         canvas.setLineWidth(max(0.8, 2 * scale))
         canvas.circle(x, y, width / 2, fill=1, stroke=1)
-
     icon_type = node.icon_type if node.icon_type != "auto" else node.node_type
     primary, secondary = _display_label(node, label_mode)
     if shape == "icon":
@@ -450,6 +452,11 @@ def _draw_node(
         _draw_label(
             canvas, primary, secondary, x=x, y=y - 30 * scale,
             width=84 * scale, scale=scale, centered=True, palette=palette,
+        )
+    elif shape == "text":
+        _draw_label(
+            canvas, primary, secondary, x=x, y=y - 3 * scale,
+            width=width - 16 * scale, scale=scale, centered=True, palette=palette,
         )
     else:
         icon_size = 42 * scale

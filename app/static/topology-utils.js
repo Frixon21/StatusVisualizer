@@ -7,6 +7,138 @@
 
   const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
   const clean = (value) => Number(value.toFixed(6));
+  const HEALTH_WINDOW_SECONDS = Object.freeze({"5m": 300, "15m": 900, "1h": 3600, "12h": 43200, "24h": 86400});
+
+  /** Fallback when heatmap-bands.js has not been generated yet. */
+  const DEFAULT_HEATMAP_LOSS_BANDS = Object.freeze([
+    {max: 0, level: "healthy", color: "#3bc878", opacity: 0.18, radius: 84, blur: 0, vivid: true},
+    {max: 1, level: "minimal", color: "#3bc878", opacity: 0.14, radius: 80, blur: 0, vivid: true},
+    {max: 3, level: "minor", color: "#b5d446", opacity: 0.24, radius: 82, blur: 18, vivid: false},
+    {max: 7, level: "warning", color: "#f2be3f", opacity: 0.52, radius: 96, blur: 16, vivid: false},
+    {max: 15, level: "poor", color: "#f47b3f", opacity: 0.36, radius: 98, blur: 28, vivid: false},
+    {max: 30, level: "bad", color: "#ee4758", opacity: 0.44, radius: 106, blur: 30, vivid: false},
+    {max: Infinity, level: "critical", color: "#c80f24", opacity: 0.52, radius: 114, blur: 34, vivid: false},
+  ]);
+
+  function normalizeHeatmapBands(raw) {
+    if (!Array.isArray(raw) || raw.length !== DEFAULT_HEATMAP_LOSS_BANDS.length) {
+      return DEFAULT_HEATMAP_LOSS_BANDS;
+    }
+    return Object.freeze(raw.map((band) => Object.freeze({
+      max: band.max === null || band.max === undefined ? Infinity : Number(band.max),
+      level: band.level,
+      color: band.color,
+      opacity: Number(band.opacity),
+      radius: Number(band.radius),
+      blur: Number(band.blur),
+      vivid: band.vivid === true,
+    })));
+  }
+
+  function getHeatmapLossBands() {
+    return normalizeHeatmapBands(globalThis.__HEATMAP_LOSS_BANDS);
+  }
+
+  function finiteHealthNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+  }
+
+  function healthWindowValue(health, windowName) {
+    const loss = finiteHealthNumber(health?.loss?.[windowName]);
+    const rttAverageMs = finiteHealthNumber(health?.rtt_avg_ms?.[windowName]);
+    const observedSeconds = finiteHealthNumber(health?.observed_seconds?.[windowName]);
+    const expectedSeconds = HEALTH_WINDOW_SECONDS[windowName];
+    return Object.freeze({
+      loss,
+      rttAverageMs,
+      observedSeconds,
+      hasData: loss !== null,
+      partial: loss !== null && observedSeconds !== null && Boolean(expectedSeconds)
+        && observedSeconds < expectedSeconds,
+    });
+  }
+
+  function heatmapLossBand(loss) {
+    if (loss === null || !Number.isFinite(loss) || loss < 0) return null;
+    const bands = getHeatmapLossBands();
+    for (let index = 0; index < bands.length; index += 1) {
+      const band = bands[index];
+      if (loss <= band.max) {
+        return Object.freeze({bandId: index, level: band.level, color: band.color, opacity: band.opacity, radius: band.radius, blur: band.blur, vivid: band.vivid === true});
+      }
+    }
+    return null;
+  }
+
+  function heatmapHealthySource(partial) {
+    const band = getHeatmapLossBands()[0];
+    return Object.freeze({
+      loss: 0,
+      partial: Boolean(partial),
+      bandId: 0,
+      level: band.level,
+      color: band.color,
+      opacity: band.opacity,
+      radius: band.radius,
+      blur: band.blur,
+      vivid: band.vivid === true,
+    });
+  }
+
+  /** Soft radial heat source for the canvas overlay; null when the device should not glow. */
+  function heatmapSource(health, windowName) {
+    if (!health) return null;
+    const value = healthWindowValue(health, windowName);
+    if (value.loss !== null) {
+      const band = heatmapLossBand(value.loss);
+      if (!band) return null;
+      return Object.freeze({loss: value.loss, partial: value.partial, ...band});
+    }
+    const online = health.online === true || health.state === "online";
+    if (online && health.monitoring_state) {
+      return heatmapHealthySource(value.partial);
+    }
+    return null;
+  }
+
+  /** Layer toggles: healthy hides only 0% glow; critical hides 100% loss and offline devices. */
+  function heatmapOverlayVisible(source, health, options = {}) {
+    const showHealthy = options.showHealthy !== false;
+    const showCritical = options.showCritical !== false;
+    if (!showHealthy && source.level === "healthy" && source.loss === 0) return false;
+    if (!showCritical) {
+      if (health?.online === false || health?.state === "offline") return false;
+      if (source.loss !== null && source.loss >= 100) return false;
+    }
+    return true;
+  }
+
+  /** Whether the canvas heatmap glow should render for this device's window loss. */
+  function heatmapGlowVisible(health, windowName, minLoss) {
+    if (!(minLoss > 0)) return true;
+    const value = healthWindowValue(health, windowName);
+    if (!value.hasData || value.loss === null) return true;
+    return value.loss >= minLoss;
+  }
+
+  function heatmapDecoration(health, windowName) {
+    const value = healthWindowValue(health, windowName);
+    if (!value.hasData) return {level: "no-data", loss: null, hasData: false, partial: false};
+    if (health?.online === false || health?.state === "offline") {
+      return {level: "offline", loss: value.loss, hasData: true, partial: value.partial};
+    }
+    if (value.loss === 0) {
+      return {level: "healthy", loss: value.loss, hasData: true, partial: value.partial};
+    }
+    const band = heatmapLossBand(value.loss);
+    return {
+      level: band?.level || "critical",
+      loss: value.loss,
+      hasData: true,
+      partial: value.partial,
+    };
+  }
 
   function normalizeBox(box) {
     return {
@@ -295,14 +427,7 @@
 
   function arrangeNodesHierarchically(nodes, edges, options = {}) {
     if (!nodes.length) return [];
-    const nodeById = new Map(nodes.map((node) => [node.id, node]));
-    const adjacency = new Map(nodes.map((node) => [node.id, new Set()]));
-    edges.forEach((edge) => {
-      if (!nodeById.has(edge.source_id) || !nodeById.has(edge.target_id)
-        || edge.source_id === edge.target_id) return;
-      adjacency.get(edge.source_id).add(edge.target_id);
-      adjacency.get(edge.target_id).add(edge.source_id);
-    });
+    const adjacency = graphAdjacency(nodes, edges);
     const trees = hierarchyComponents(nodes, adjacency)
       .map((component) => hierarchyTree(component, adjacency));
     const positions = hierarchyForestLayout(trees, options);
@@ -493,6 +618,7 @@
     });
     const visibleNodes = nodes.filter((node) => !hiddenTypes.has(node.node_type)
       && !(options.hideManual && ["local", "manual"].includes(node.source))
+      && !(options.hideNoIp && !String(node.address || "").trim() && !isInferredSwitch(node))
       && !collapsedChildren.has(node.id));
     const visibleIds = new Set(visibleNodes.map(({id}) => id));
     return {
@@ -520,6 +646,7 @@
     const name = String(node.name || "").trim();
     const address = String(node.address || "").trim();
     const fallback = name || address || String(node.id || node.node_type || "Unknown device");
+    if (node.node_shape === "text") return Object.freeze({primary: fallback, secondary: ""});
     if (mode === "hostname") return Object.freeze({primary: name || address || fallback, secondary: ""});
     if (mode === "ip") return Object.freeze({primary: address || name || fallback, secondary: ""});
     return Object.freeze({primary: name || address || fallback, secondary: name && address && name !== address ? address : ""});
@@ -558,6 +685,21 @@
     const matches = String(value ?? "").match(/\d{1,4}/g) || [];
     return [...new Set(matches.filter((item) => Number(item) >= 1 && Number(item) <= 4094))]
       .sort(compareVlanIds);
+  }
+
+  function normalizeManualVlanIds(value) {
+    const source = String(value ?? "").trim();
+    if (!source) return Object.freeze({ids: Object.freeze([]), value: ""});
+    const tokens = source.split(",").map((token) => token.trim());
+    if (tokens.some((token) => !/^\d+$/.test(token))) {
+      throw new Error("VLAN IDs must be comma-separated whole numbers");
+    }
+    const numbers = tokens.map(Number);
+    if (numbers.some((id) => id < 1 || id > 4094)) {
+      throw new Error("VLAN IDs must be between 1 and 4094");
+    }
+    const ids = [...new Set(numbers)].sort((left, right) => left - right).map(String);
+    return Object.freeze({ids: Object.freeze(ids), value: ids.join(", ")});
   }
 
   function isVlanMetadataKey(key) {
@@ -722,11 +864,19 @@
     constrainPanToBounds,
     fitTransform,
     focusTransform,
+    HEATMAP_LOSS_BANDS: DEFAULT_HEATMAP_LOSS_BANDS,
+    getHeatmapLossBands,
+    healthWindowValue,
+    heatmapDecoration,
+    heatmapLossBand,
+    heatmapGlowVisible,
+    heatmapOverlayVisible,
+    heatmapSource,
     moveSelectedNodes,
     nodeDisplayLabel,
     nodeVlanIds,
+    normalizeManualVlanIds,
     nodesInsideBox,
-    normalizeBox,
     orthogonalEdgePath,
     reconcileVisibleSelection,
     resolveIconType,

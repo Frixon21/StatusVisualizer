@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.models import DeviceRecord
 from tests.lantopolog_fixture import export_files
 
 
@@ -33,6 +34,27 @@ def manual_node(**changes) -> dict:
         "locked": True,
     }
     return {**payload, **changes}
+
+
+def test_imported_records_accept_source_metadata_outside_manual_input_rules() -> None:
+    metadata: dict[str, object] = {
+        f"Imported field {index}": f"value-{index}" for index in range(45)
+    }
+    metadata["VLAN"] = "Not reported"
+
+    record = DeviceRecord(
+        id="imported-1",
+        name="Imported switch",
+        address="192.168.1.2",
+        x=0.5,
+        y=0.5,
+        source="lantopolog",
+        metadata=metadata,
+        created_at="2026-09-16T00:00:00Z",
+        updated_at="2026-09-16T00:00:00Z",
+    )
+
+    assert record.metadata == metadata
 
 
 def test_one_request_imports_the_folder_and_returns_a_ready_topology(tmp_path) -> None:
@@ -159,7 +181,15 @@ def test_legacy_edge_pair_constraint_is_migrated_for_parallel_imports(tmp_path) 
 def test_reimport_is_atomic_idempotent_and_preserves_manual_nodes(tmp_path) -> None:
     app = create_app(Settings(data_dir=tmp_path))
     with TestClient(app) as client:
-        manual = client.post("/api/devices", json=manual_node()).json()
+        manual = client.post(
+            "/api/devices",
+            json=manual_node(
+                name="DMZ boundary",
+                address="",
+                node_shape="text",
+                metadata={"VLAN": "20", "VLANs": "20, 30"},
+            ),
+        ).json()
         first = client.post("/api/import/lantopolog", json=import_payload())
         second = client.post("/api/import/lantopolog", json=import_payload())
 
@@ -167,7 +197,9 @@ def test_reimport_is_atomic_idempotent_and_preserves_manual_nodes(tmp_path) -> N
         topology = client.get("/api/topology").json()
         assert len(topology["nodes"]) == 5
         assert len(topology["edges"]) == 3
-        assert any(node["id"] == manual["id"] for node in topology["nodes"])
+        preserved = next(node for node in topology["nodes"] if node["id"] == manual["id"])
+        assert preserved["node_shape"] == "text"
+        assert preserved["metadata"] == {"VLAN": "20", "VLANs": "20, 30"}
 
         broken = import_payload()
         broken["files"][0]["content"] = "not;a;valid;switch;export"
@@ -202,6 +234,83 @@ def test_manual_topology_crud_still_works(tmp_path) -> None:
         assert updated.json()["node_shape"] == "circle"
         assert client.delete(f"/api/edges/{edge.json()['id']}").status_code == 204
         assert client.delete(f"/api/devices/{second['id']}").status_code == 204
+
+
+def test_manual_nodes_can_store_vlan_metadata_and_text_labels(tmp_path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/devices",
+            json=manual_node(
+                name="Expo callout",
+                address="",
+                node_shape="text",
+                metadata={"VLAN": "020", "VLANs": "30, 20, 30"},
+            ),
+        )
+
+        assert created.status_code == 201
+        node = created.json()
+        assert node["node_shape"] == "text"
+        assert node["metadata"] == {"VLAN": "20", "VLANs": "20, 30"}
+
+        topology_node = client.get("/api/topology").json()["nodes"][0]
+        assert topology_node["metadata"] == {"VLAN": "20", "VLANs": "20, 30"}
+
+
+def test_manual_vlan_metadata_rejects_invalid_ids(tmp_path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    invalid_values = ("", "0", "4095", "-1", "abc", "10<script>")
+    with TestClient(app) as client:
+        for value in invalid_values:
+            response = client.post(
+                "/api/devices",
+                json=manual_node(metadata={"VLAN": value}),
+            )
+            assert response.status_code == 422, value
+
+
+def test_imported_node_update_preserves_source_metadata(tmp_path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    with TestClient(app) as client:
+        assert client.post("/api/import/lantopolog", json=import_payload()).status_code == 200
+        imported = next(
+            node for node in client.get("/api/topology").json()["nodes"]
+            if node["source"] == "lantopolog" and node["metadata"]
+        )
+        original_metadata = imported["metadata"]
+        payload = {
+            key: imported[key]
+            for key in (
+                "name", "address", "notes", "x", "y", "node_type", "icon_type",
+                "node_shape", "mac_address", "locked",
+            )
+        }
+        payload["metadata"] = {"VLAN": "999"}
+
+        updated = client.put(f"/api/devices/{imported['id']}", json=payload)
+
+        assert updated.status_code == 200
+        assert updated.json()["metadata"] == original_metadata
+
+
+def test_device_update_without_metadata_preserves_existing_metadata(tmp_path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/devices",
+            json=manual_node(metadata={"VLAN": "40"}),
+        ).json()
+        payload = {
+            key: created[key]
+            for key in ("name", "address", "notes", "x", "y", "node_type", "mac_address", "locked")
+        }
+        payload.update({"icon_type": "server", "node_shape": "card"})
+
+        updated = client.put(f"/api/devices/{created['id']}", json=payload)
+
+        assert updated.status_code == 200
+        assert updated.json()["metadata"] == {"VLAN": "40"}
 
 
 def test_delete_all_devices_removes_the_current_topology(tmp_path) -> None:
@@ -464,7 +573,7 @@ def test_frontend_and_health_are_served(tmp_path) -> None:
         assert client.get("/api/health").json()["status"] == "ok"
         page = client.get("/")
         assert page.status_code == 200
-        assert "Import Lantopolog" in page.text
+        assert 'id="import-button"' in page.text
         assert client.get("/static/app.js").status_code == 200
 
 

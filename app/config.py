@@ -23,10 +23,9 @@ def default_data_dir() -> Path:
     configured = os.getenv("STATUS_VISUALIZER_DATA_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
+    # Portable by default: keep the database next to the EXE / project root.
     if getattr(sys, "frozen", False):
-        local_app_data = os.getenv("LOCALAPPDATA")
-        user_data_root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-        return user_data_root / "StatusVisualizer"
+        return Path(sys.executable).resolve().parent / "data"
     return _project_root() / "data"
 
 

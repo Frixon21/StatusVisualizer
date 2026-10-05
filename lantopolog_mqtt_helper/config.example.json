@@ -1,0 +1,17 @@
+{
+  "export_folder": "C:\\LanTopoLog\\Export",
+  "status_interval_seconds": 30,
+  "ping_timeout_seconds": 2,
+  "ping_concurrency": 20,
+  "recovery_successes": 2,
+  "broker": {
+    "host": "mqtt.example.com",
+    "port": 8883,
+    "username": "site-publisher",
+    "password": "replace-in-the-restricted-deployment-copy",
+    "tls": {
+      "enabled": true,
+      "ca_file": "C:\\secure\\broker-ca.pem"
+    }
+  }
+}

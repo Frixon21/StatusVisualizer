@@ -21,7 +21,7 @@ if (-not (Test-Path -LiteralPath $ExecutablePath)) {
 }
 
 $installDir = Join-Path $env:ProgramFiles "StatusVisualizer"
-$dataDir = Join-Path $env:ProgramData "StatusVisualizer"
+$dataDir = Join-Path $installDir "data"
 $installedExe = Join-Path $installDir "StatusVisualizer.exe"
 $taskName = "StatusVisualizer"
 

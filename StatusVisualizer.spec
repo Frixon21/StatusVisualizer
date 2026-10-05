@@ -1,18 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_submodules
 
 
 hidden_imports = (
     collect_submodules("uvicorn")
     + collect_submodules("fastapi")
+    + collect_submodules("paho.mqtt")
 )
+
+
+def static_datas():
+    """Bundle app/static but omit the dev-only heatmap tuner page."""
+    entries = []
+    static_root = Path("app/static")
+    for path in sorted(static_root.rglob("*")):
+        if not path.is_file() or path.name == "heatmap-dev.html":
+            continue
+        entries.append((str(path), path.parent.as_posix()))
+    return entries
+
 
 a = Analysis(
     ["run.py"],
     pathex=["."],
     binaries=[],
-    datas=[("app/static", "app/static")],
+    datas=static_datas(),
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},

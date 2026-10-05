@@ -10,5 +10,17 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+.tmp/
+.tmp-pytest/
 build/
+build-*/
 dist/
+dist-staging/
+dist-helper/
+dist-click-run/
+build-helper/
+releases/
+tmp/
+to_delete/
+*.exe
+!scripts/
