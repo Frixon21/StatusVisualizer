@@ -1,5 +1,6 @@
 # Runtime state
 data/
+mqtt.json
 .env
 .env.*
 
@@ -24,3 +25,7 @@ tmp/
 to_delete/
 *.exe
 !scripts/
+.venv/
+.cursor/
+debug-*.log
+dist-status-visualizer/
