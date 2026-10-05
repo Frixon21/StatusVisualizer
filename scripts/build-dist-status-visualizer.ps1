@@ -1,11 +1,16 @@
 param(
     [string]$PythonPath = "python",
     [string]$OutputPath = "",
-    [switch]$KeepBuildDirs
+    [string]$ProjectDir = "",
+    [switch]$KeepBuildDirs,
+    [switch]$ConfigsOnly
 )
 
 $ErrorActionPreference = "Stop"
-$projectDir = Split-Path -Parent $PSScriptRoot
+if (-not $ProjectDir) {
+    $ProjectDir = Split-Path -Parent $PSScriptRoot
+}
+$projectDir = [IO.Path]::GetFullPath($ProjectDir)
 if (-not $OutputPath) {
     $OutputPath = Join-Path $projectDir "dist-status-visualizer"
 }
@@ -26,6 +31,49 @@ function Stop-PackLockedProcesses {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
     Start-Sleep -Milliseconds 500
+}
+
+function Copy-DeploymentConfig {
+    param(
+        [string]$LocalName,
+        [string]$TemplatePath,
+        [string]$Destination
+    )
+    $localPath = Join-Path $projectDir (Join-Path "pack-local" $LocalName)
+    $source = $TemplatePath
+    if (Test-Path -LiteralPath $localPath) {
+        Write-Host "Using pack-local\$LocalName"
+        $source = $localPath
+    }
+    Copy-Item -LiteralPath $source -Destination $Destination
+}
+
+function Write-DeploymentConfigs {
+    $dashboardDir = Join-Path $OutputPath "Dashboard"
+    $serviceDir = Join-Path $OutputPath "MqttService"
+    $linuxDashboardDir = Join-Path $OutputPath "Dashboard-Linux"
+    $linuxServiceDir = Join-Path $OutputPath "MqttService-Linux"
+    New-Item -ItemType Directory -Force -Path $dashboardDir, $serviceDir, $linuxDashboardDir, $linuxServiceDir | Out-Null
+
+    $packTemplates = Join-Path $projectDir "pack-templates"
+    $dashboardMqttTemplate = Join-Path $packTemplates "dashboard-mqtt.json"
+    $serviceConfigTemplate = Join-Path $packTemplates "mqtt-service.config.json"
+    $serviceConfigLinuxTemplate = Join-Path $packTemplates "mqtt-service.config.linux.json"
+    foreach ($template in @($dashboardMqttTemplate, $serviceConfigTemplate, $serviceConfigLinuxTemplate)) {
+        if (-not (Test-Path -LiteralPath $template)) {
+            throw "Missing pack template: $template"
+        }
+    }
+
+    Copy-DeploymentConfig -LocalName "dashboard-mqtt.json" -TemplatePath $dashboardMqttTemplate -Destination (Join-Path $dashboardDir "mqtt.json")
+    Copy-DeploymentConfig -LocalName "mqtt-service.config.json" -TemplatePath $serviceConfigTemplate -Destination (Join-Path $serviceDir "config.json")
+    Copy-DeploymentConfig -LocalName "dashboard-mqtt.json" -TemplatePath $dashboardMqttTemplate -Destination (Join-Path $linuxDashboardDir "mqtt.json")
+    Copy-DeploymentConfig -LocalName "mqtt-service.config.linux.json" -TemplatePath $serviceConfigLinuxTemplate -Destination (Join-Path $linuxServiceDir "config.json")
+}
+
+if ($ConfigsOnly) {
+    Write-DeploymentConfigs
+    return
 }
 
 function Clear-Directory {
@@ -86,38 +134,6 @@ $siteController = $siteController.Replace(
     [Text.UTF8Encoding]::new($false)
 )
 
-$defaultDashboardConfig = @'
-{
-  "host": "mqtt.example.com",
-  "port": 1883,
-  "username": "status-visualizer",
-  "keepalive": 60,
-  "tls": { "enabled": false }
-}
-'@
-$defaultServiceConfig = @'
-{
-  "export_folder": "C:\\LanTopoLog\\Export",
-  "broker": {
-    "host": "mqtt.example.com",
-    "port": 1883,
-    "username": "status-visualizer",
-    "tls": { "enabled": false }
-  }
-}
-'@
-
-[System.IO.File]::WriteAllText(
-    (Join-Path $dashboard "mqtt.json"),
-    $defaultDashboardConfig,
-    [System.Text.UTF8Encoding]::new($false)
-)
-[System.IO.File]::WriteAllText(
-    (Join-Path $service "config.json"),
-    $defaultServiceConfig,
-    [System.Text.UTF8Encoding]::new($false)
-)
-
 Set-Content -LiteralPath (Join-Path $dashboard "Start Status Visualizer.bat") -Encoding ascii -Value @'
 @echo off
 setlocal
@@ -163,26 +179,7 @@ Copy-Item (Join-Path $projectDir "scripts\internal\linux\uninstall-dashboard.sh"
 Copy-Item (Join-Path $projectDir "scripts\internal\linux\install-site-service.sh") (Join-Path $linuxService "INSTALL.sh")
 Copy-Item (Join-Path $projectDir "scripts\internal\linux\uninstall-site-service.sh") (Join-Path $linuxService "UNINSTALL.sh")
 
-[IO.File]::WriteAllText(
-    (Join-Path $linuxDashboard "mqtt.json"),
-    $defaultDashboardConfig,
-    [Text.UTF8Encoding]::new($false)
-)
-[IO.File]::WriteAllText(
-    (Join-Path $linuxService "config.json"),
-    @'
-{
-  "export_folder": "/path/to/LanTopoLog/Export",
-  "broker": {
-    "host": "mqtt.example.com",
-    "port": 1883,
-    "username": "status-visualizer",
-    "tls": { "enabled": false }
-  }
-}
-'@,
-    [Text.UTF8Encoding]::new($false)
-)
+Write-DeploymentConfigs
 [IO.File]::WriteAllText(
     (Join-Path $linuxService "requirements.txt"),
     "paho-mqtt>=2.1,<3`npydantic>=2.10,<3`n",

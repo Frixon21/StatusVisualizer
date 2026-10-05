@@ -45,6 +45,18 @@ def test_mqtt_credentials_script_prompts_and_checks_broker() -> None:
     assert "Get-VerifiedMqttPassword" in script
 
 
+def test_pack_templates_contain_no_deployment_secrets() -> None:
+    for name in (
+        "dashboard-mqtt.json",
+        "mqtt-service.config.json",
+        "mqtt-service.config.linux.json",
+    ):
+        text = (ROOT / "pack-templates" / name).read_text(encoding="utf-8")
+        assert "mqtt.example.com" in text
+        assert '"password"' not in text
+        assert "24.121" not in text
+
+
 def test_deployment_pack_has_windows_and_linux_dashboard_and_service() -> None:
     script = _read("build-dist-status-visualizer.ps1")
     assert "Dashboard" in script
@@ -52,6 +64,9 @@ def test_deployment_pack_has_windows_and_linux_dashboard_and_service() -> None:
     assert "Dashboard-Linux" in script
     assert "MqttService-Linux" in script
     assert "dist-status-visualizer" in script
+    assert "pack-templates" in script
+    assert "pack-local" in script
+    assert 'Join-Path $projectDir "mqtt.json"' not in script
     assert "Start Status Visualizer.bat" in script
     assert "INSTALL Service.bat" in script
     assert "UNINSTALL Service.bat" in script
@@ -60,7 +75,7 @@ def test_deployment_pack_has_windows_and_linux_dashboard_and_service() -> None:
     assert "Stop-PackLockedProcesses" in script
     assert 'Copy-Item (Join-Path $projectDir "app") (Join-Path $linuxService "app") -Recurse' in script
     assert '"paho-mqtt>=2.1,<3`npydantic>=2.10,<3`n"' in script
-    assert '"password"' not in script
+    assert "24.121" not in script
     assert "REPLACE_ME" not in script
 
 

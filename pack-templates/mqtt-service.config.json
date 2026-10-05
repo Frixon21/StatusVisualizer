@@ -1,0 +1,9 @@
+{
+  "export_folder": "C:\\LanTopoLog\\Export",
+  "broker": {
+    "host": "mqtt.example.com",
+    "port": 1883,
+    "username": "status-visualizer",
+    "tls": { "enabled": false }
+  }
+}

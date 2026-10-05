@@ -1,0 +1,7 @@
+{
+  "host": "mqtt.example.com",
+  "port": 1883,
+  "username": "status-visualizer",
+  "keepalive": 60,
+  "tls": { "enabled": false }
+}

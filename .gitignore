@@ -1,6 +1,7 @@
 # Runtime state
 data/
 mqtt.json
+pack-local/
 .env
 .env.*
 
@@ -29,3 +30,4 @@ to_delete/
 .cursor/
 debug-*.log
 dist-status-visualizer/
+dist-status-visualizer.*
