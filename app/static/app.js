@@ -18,7 +18,7 @@
   const {
     arrangeNodesHierarchically, arrangeNodesBySubnet, arrangeNodesBySwitch, arrangeNodesByVlan,
     cancelViewportGestures, constrainPanToBounds, fitTransform, focusTransform, moveSelectedNodes,
-    nodeDisplayLabel, nodeVlanIds, normalizeManualVlanIds, nodesInsideBox, resolveIconType, shouldAddMarqueeSelection,
+    nodeDisplayLabel, nodeVlanIds, normalizeDisplayPreferences, normalizeManualVlanIds, nodesInsideBox, resolveIconType, shouldAddMarqueeSelection,
     healthWindowValue, heatmapGlowVisible, heatmapOverlayVisible, heatmapSource, orthogonalEdgePath, reconcileVisibleSelection, topologyIcon, unmanagedGroupChildren, visibleTopology,
     vlanGroups, vlanNodeDecoration, viewportToWorld, zoomScale,
   } = window.TopologyUtils;
@@ -174,14 +174,8 @@
   function readDisplayPreferences() {
     try {
       const parsed = JSON.parse(localStorage.getItem("topology-display-options") || "{}");
-      const allowedModes = new Set(["hostname", "ip", "both"]);
-      return {
-        hiddenTypes: new Set(Array.isArray(parsed.hiddenTypes) ? parsed.hiddenTypes.map(String) : []),
-        hideManual: Boolean(parsed.hideManual),
-        hideNoIp: Boolean(parsed.hideNoIp),
-        labelMode: allowedModes.has(parsed.labelMode) ? parsed.labelMode : "both",
-      };
-    } catch (_) { return {hiddenTypes: new Set(), hideManual: false, hideNoIp: false, labelMode: "both"}; }
+      return normalizeDisplayPreferences(parsed);
+    } catch (_) { return normalizeDisplayPreferences(); }
   }
 
   function saveDisplayPreferences() {

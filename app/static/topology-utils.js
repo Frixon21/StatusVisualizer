@@ -642,9 +642,31 @@
     return {selectedNodeIds, selectedNodeId, selectedEdgeId, panelMode};
   }
 
+  function normalizeDisplayPreferences(value = {}) {
+    const parsed = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const allowedModes = new Set(["hostname", "ip", "both"]);
+    return {
+      hiddenTypes: new Set(Array.isArray(parsed.hiddenTypes) ? parsed.hiddenTypes.map(String) : []),
+      hideManual: Boolean(parsed.hideManual),
+      hideNoIp: Boolean(parsed.hideNoIp),
+      labelMode: allowedModes.has(parsed.labelMode) ? parsed.labelMode : "both",
+    };
+  }
+
+  function importedHostname(node) {
+    if (node?.source !== "lantopolog" || !node.metadata || typeof node.metadata !== "object") return "";
+    const entry = Object.entries(node.metadata).find(([key]) => (
+      String(key).toLowerCase().replace(/[\s_-]+/g, "") === "hostname"
+    ));
+    return entry ? String(entry[1] ?? "").trim() : "";
+  }
+
   function nodeDisplayLabel(node, mode = "both") {
-    const name = String(node.name || "").trim();
     const address = String(node.address || "").trim();
+    const storedName = String(node.name || "").trim();
+    const sourceHostname = importedHostname(node);
+    const name = sourceHostname && (!storedName || (address && storedName === address))
+      ? sourceHostname : storedName;
     const fallback = name || address || String(node.id || node.node_type || "Unknown device");
     if (node.node_shape === "text") return Object.freeze({primary: fallback, secondary: ""});
     if (mode === "hostname") return Object.freeze({primary: name || address || fallback, secondary: ""});
@@ -875,6 +897,7 @@
     moveSelectedNodes,
     nodeDisplayLabel,
     nodeVlanIds,
+    normalizeDisplayPreferences,
     normalizeManualVlanIds,
     nodesInsideBox,
     orthogonalEdgePath,

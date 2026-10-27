@@ -49,6 +49,13 @@ def _update_node(
     now: str,
 ) -> None:
     locked = bool(existing["locked"])
+    existing_name = str(existing["name"] or "").strip()
+    existing_address = str(existing["address"] or "").strip()
+    name = (
+        existing["name"]
+        if locked and existing_name and existing_name != existing_address
+        else node.name
+    )
     connection.execute(
         """
         UPDATE devices SET name = ?, address = ?, notes = ?, x = ?, y = ?,
@@ -60,7 +67,7 @@ def _update_node(
             metadata_json = ?, updated_at = ? WHERE id = ?
         """,
         (
-            existing["name"] if locked else node.name,
+            name,
             node.address,
             existing["notes"],
             existing["x"] if locked else node.x,

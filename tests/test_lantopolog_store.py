@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 from app.database import Repository
 from app.lantopolog import ImportedInterface, ImportedNode, ImportedTopology
-from app.models import DeviceInput, EdgeInput
+from app.models import DeviceInput, DevicePosition, EdgeInput
 
 
 def topology(
@@ -24,14 +24,21 @@ def topology(
     )
 
 
-def imported_node(key: str, name: str, address: str) -> ImportedNode:
+def imported_node(
+    key: str,
+    name: str,
+    address: str,
+    *,
+    node_type: str = "switch",
+    metadata=None,
+) -> ImportedNode:
     return ImportedNode(
         key=key,
         name=name,
         address=address,
-        node_type="switch",
+        node_type=node_type,
         mac_address="AA:BB:CC:DD:EE:FF",
-        metadata=MappingProxyType({"Source File": "sw_list.csv"}),
+        metadata=MappingProxyType(dict(metadata or {"Source File": "sw_list.csv"})),
     )
 
 
@@ -112,3 +119,55 @@ def test_reimport_drops_stale_interfaces_and_ignores_orphan_interface_rows(tmp_p
     assert snapshot["interfaces"][0]["speed_bps"] is None
     assert snapshot["interfaces"][0]["metadata_json"] == '{"Role": "uplink"}'
     assert snapshot["import_status"]["file_names"] == ["port_list.csv"]
+
+
+def test_reimport_promotes_locked_ip_name_to_hostname_but_preserves_custom_name(tmp_path) -> None:
+    repository = Repository(tmp_path / "status.db")
+    repository.initialize()
+    key = "endpoint:mac:AA:BB:CC:DD:EE:FF"
+    address = "192.168.203.100"
+    repository.replace_lantopolog(topology(nodes=(
+        imported_node(key, address, address, node_type="workstation"),
+    )))
+    original = repository.topology_snapshot()["nodes"][0]
+    repository.update_device_positions([DevicePosition(id=original.id, x=0.7, y=0.6)])
+
+    repository.replace_lantopolog(topology(nodes=(
+        imported_node(
+            key,
+            "BT-Gabriel",
+            address,
+            node_type="workstation",
+            metadata={"HostName": "BT-Gabriel", "Source File": "complist.csv"},
+        ),
+    )))
+    promoted = repository.get_device(original.id)
+    assert promoted is not None
+    assert promoted.name == "BT-Gabriel"
+    assert (promoted.x, promoted.y, promoted.locked) == (0.7, 0.6, True)
+
+    repository.update_device(
+        original.id,
+        DeviceInput(
+            name="Reception tablet",
+            address=address,
+            x=promoted.x,
+            y=promoted.y,
+            node_type="workstation",
+            mac_address=promoted.mac_address,
+            locked=True,
+        ),
+    )
+    repository.replace_lantopolog(topology(nodes=(
+        imported_node(
+            key,
+            "BT-Gabriel-NEW",
+            address,
+            node_type="workstation",
+            metadata={"HostName": "BT-Gabriel-NEW", "Source File": "complist.csv"},
+        ),
+    )))
+    customized = repository.get_device(original.id)
+    assert customized is not None
+    assert customized.name == "Reception tablet"
+    assert customized.metadata["HostName"] == "BT-Gabriel-NEW"

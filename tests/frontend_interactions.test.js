@@ -19,6 +19,7 @@ const {
   moveSelectedNodes,
   nodeDisplayLabel,
   nodeVlanIds,
+  normalizeDisplayPreferences,
   normalizeManualVlanIds,
   nodesInsideBox,
   orthogonalEdgePath,
@@ -781,6 +782,67 @@ test("device display labels support hostname, IP, and both modes with useful fal
     primary: "10.0.0.4",
     secondary: "",
   });
+});
+
+test("imported endpoint hostname metadata repairs stale IP labels without replacing real names", () => {
+  const endpoint = {
+    id: "endpoint",
+    name: "192.168.203.100",
+    address: "192.168.203.100",
+    node_type: "workstation",
+    source: "lantopolog",
+    metadata: {HostName: "BT-Gabriel"},
+  };
+  const managedSwitch = {
+    id: "switch",
+    name: "HP-2520G-24-PoE",
+    address: "192.168.203.5",
+    node_type: "switch",
+    source: "lantopolog",
+    metadata: {HostName: "ignored-switch-hostname"},
+  };
+
+  assert.deepEqual(nodeDisplayLabel(endpoint, "hostname"), {primary: "BT-Gabriel", secondary: ""});
+  assert.deepEqual(nodeDisplayLabel(endpoint, "ip"), {primary: "192.168.203.100", secondary: ""});
+  assert.deepEqual(nodeDisplayLabel(endpoint, "both"), {
+    primary: "BT-Gabriel",
+    secondary: "192.168.203.100",
+  });
+  assert.deepEqual(nodeDisplayLabel(managedSwitch, "hostname"), {
+    primary: "HP-2520G-24-PoE",
+    secondary: "",
+  });
+  assert.deepEqual(nodeDisplayLabel(managedSwitch, "both"), {
+    primary: "HP-2520G-24-PoE",
+    secondary: "192.168.203.5",
+  });
+  assert.deepEqual(nodeDisplayLabel({
+    ...endpoint,
+    name: "Reception tablet",
+  }, "hostname"), {primary: "Reception tablet", secondary: ""});
+});
+
+test("blank imported hostnames fall back safely and persisted label mode survives reload", () => {
+  const endpoint = {
+    id: "blank-hostname",
+    name: "192.168.203.111",
+    address: "192.168.203.111",
+    source: "lantopolog",
+    metadata: {HostName: "   "},
+  };
+  assert.deepEqual(nodeDisplayLabel(endpoint, "hostname"), {
+    primary: "192.168.203.111",
+    secondary: "",
+  });
+
+  const saved = JSON.stringify({
+    hiddenTypes: ["printer"], hideManual: true, hideNoIp: false, labelMode: "hostname",
+  });
+  const reloaded = normalizeDisplayPreferences(JSON.parse(saved));
+  assert.equal(reloaded.labelMode, "hostname");
+  assert.deepEqual([...reloaded.hiddenTypes], ["printer"]);
+  assert.equal(reloaded.hideManual, true);
+  assert.equal(normalizeDisplayPreferences({labelMode: "invalid"}).labelMode, "both");
 });
 
 test("text-label nodes keep only annotation copy in their display label", () => {

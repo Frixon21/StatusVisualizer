@@ -11,6 +11,7 @@ from app.models import DeviceRecord, EdgeRecord
 from app.topology_pdf import (
     MAX_PAGE_SIDE,
     TopologyBounds,
+    _display_label,
     _draw_icon,
     _draw_node,
     _node_vlan_ids,
@@ -280,6 +281,43 @@ def test_pdf_omits_liveness_markers_and_ping_legend() -> None:
     assert b".239216 .862745 .592157 rg" not in drawing
     assert b".941176 .321569 .294118 rg" not in drawing
     assert b".54902 .627451 .709804 rg" not in drawing
+
+
+def test_pdf_labels_use_imported_endpoint_hostname_when_saved_name_is_only_the_ip() -> None:
+    endpoint = device(
+        "endpoint",
+        "192.168.203.100",
+        0.4,
+        0.5,
+        address="192.168.203.100",
+        source="lantopolog",
+        metadata={"HostName": "BT-Gabriel"},
+    )
+    switch = device(
+        "switch",
+        "HP-2520G-24-PoE",
+        0.6,
+        0.5,
+        address="192.168.203.5",
+        source="lantopolog",
+        node_type="switch",
+        metadata={"HostName": "ignored-switch-hostname"},
+    )
+    blank = device(
+        "blank",
+        "192.168.203.111",
+        0.8,
+        0.5,
+        address="192.168.203.111",
+        source="lantopolog",
+        metadata={"HostName": "   "},
+    )
+
+    assert _display_label(endpoint, "hostname") == ("BT-Gabriel", "")
+    assert _display_label(endpoint, "ip") == ("192.168.203.100", "")
+    assert _display_label(endpoint, "both") == ("BT-Gabriel", "192.168.203.100")
+    assert _display_label(switch, "both") == ("HP-2520G-24-PoE", "192.168.203.5")
+    assert _display_label(blank, "hostname") == ("192.168.203.111", "")
 
 
 def test_pdf_theme_changes_the_vector_palette_without_changing_content() -> None:

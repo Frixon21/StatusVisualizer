@@ -197,6 +197,11 @@ def _fit_text(text: str, size: float, maximum_width: float) -> str:
 def _display_label(node: Any, label_mode: str) -> tuple[str, str]:
     name = safe_pdf_text(node.name)
     address = safe_pdf_text(node.address)
+    if getattr(node, "source", "") == "lantopolog" and (not name or name == address):
+        for key, value in (getattr(node, "metadata", {}) or {}).items():
+            if re.sub(r"[\s_-]+", "", str(key).casefold()) == "hostname":
+                name = safe_pdf_text(value) or name
+                break
     fallback = name or address or safe_pdf_text(node.node_type) or "Device"
     if getattr(node, "node_shape", "") == "text":
         return fallback, ""
