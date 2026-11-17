@@ -54,7 +54,7 @@ test("packet-loss heatmap uses loss severity on the canvas and keeps offline det
   assert.equal(heatmapSource({online: true, loss: {"5m": 40}}, "5m").level, "critical");
 });
 
-test("heatmap layer toggles hide only zero-loss healthy and full critical/offline devices", () => {
+test("heatmap layer toggles hide only zero-loss healthy and full-loss windows", () => {
   const highLoss = heatmapSource({online: true, loss: {"5m": 56.6}}, "5m");
   assert.equal(highLoss.level, "critical");
   assert.equal(
@@ -69,13 +69,50 @@ test("heatmap layer toggles hide only zero-loss healthy and full critical/offlin
   const offline = heatmapSource({online: false, loss: {"5m": 56.6}}, "5m");
   assert.equal(
     heatmapOverlayVisible(offline, {online: false}, {showHealthy: true, showCritical: false}),
-    false,
+    true,
   );
   const healthy = heatmapSource({online: true, loss: {"5m": 0}}, "5m");
   assert.equal(
     heatmapOverlayVisible(healthy, {online: true}, {showHealthy: false, showCritical: true}),
     false,
   );
+});
+
+test("offline device with 60% hourly loss stays visible when Critical is disabled", () => {
+  const health = {
+    online: false, state: "offline", monitoring_state: "degraded",
+    loss: {"1h": 60, "5m": 100}, observed_seconds: {"1h": 3600, "5m": 300},
+  };
+  const options = {showHealthy: false, showCritical: false};
+  const hourly = heatmapSource(health, "1h");
+  assert.equal(hourly.loss, 60);
+  assert.equal(heatmapOverlayVisible(hourly, health, options), true);
+  assert.equal(heatmapGlowVisible(health, "1h", 60), true);
+  assert.equal(heatmapGlowVisible(health, "1h", 60.1), false);
+  assert.equal(heatmapDecoration(health, "1h").level, "offline");
+
+  const recent = heatmapSource(health, "5m");
+  assert.equal(heatmapOverlayVisible(recent, health, options), false);
+  assert.equal(heatmapOverlayVisible(recent, health, {...options, showCritical: true}), true);
+});
+
+test("heatmap layer filters follow selected loss percentages regardless of current connectivity", () => {
+  for (const status of [{online: true}, {online: false}, {state: "offline"}, {state: "unknown"}]) {
+    for (const loss of [0, 0.1, 30, 60, 99.9, 100]) {
+      const health = {...status, loss: {"1h": loss}};
+      const source = heatmapSource(health, "1h");
+      for (const showHealthy of [false, true]) {
+        for (const showCritical of [false, true]) {
+          const expected = (loss !== 0 || showHealthy) && (loss !== 100 || showCritical);
+          assert.equal(
+            heatmapOverlayVisible(source, health, {showHealthy, showCritical}),
+            expected,
+            JSON.stringify({status, loss, showHealthy, showCritical}),
+          );
+        }
+      }
+    }
+  }
 });
 
 test("packet-loss heatmap treats missing history as no data and marks short observations partial", () => {

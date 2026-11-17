@@ -102,15 +102,12 @@
     return null;
   }
 
-  /** Layer toggles: healthy hides only 0% glow; critical hides 100% loss and offline devices. */
-  function heatmapOverlayVisible(source, health, options = {}) {
+  /** Layer toggles use the selected window's loss, independently of current connectivity. */
+  function heatmapOverlayVisible(source, _health, options = {}) {
     const showHealthy = options.showHealthy !== false;
     const showCritical = options.showCritical !== false;
     if (!showHealthy && source.level === "healthy" && source.loss === 0) return false;
-    if (!showCritical) {
-      if (health?.online === false || health?.state === "offline") return false;
-      if (source.loss !== null && source.loss >= 100) return false;
-    }
+    if (!showCritical && source.loss !== null && source.loss >= 100) return false;
     return true;
   }
 

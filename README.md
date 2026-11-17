@@ -151,6 +151,34 @@ Linux folders install source into an isolated Python virtual environment and reg
 
 You do **not** copy the whole repository or huge export folders between machines. Each host only needs its matching folder. LanTopoLog keeps exporting locally; the service publishes one retained MQTT ZIP to your existing broker.
 
+### Safe updates to an existing Windows Dashboard
+
+Do not rebuild the full deployment pack over a Dashboard you already use: the pack builder recreates its output folder, including any data stored there.
+
+For subsequent source changes, run this from the project folder instead:
+
+```powershell
+.\scripts\update-dashboard.ps1
+```
+
+The updater builds only the Dashboard using the existing virtual environment (no package installs), starts the candidate on a temporary local port with empty test data and MQTT disabled, and verifies its health and bundled UI before stopping the existing app. It stops only processes with the exact portable Dashboard executable path, backs up the old EXE under `dist-status-visualizer\Dashboard\.dashboard-update-backups`, and atomically replaces only `StatusVisualizer.exe`. It verifies that every other Dashboard file and directory, including databases, site data, configuration, and launchers, stayed unchanged. A failed replacement restores the old EXE. Linked/junction targets are rejected rather than followed.
+
+After it finishes, run the same script in launch-only mode:
+
+```powershell
+.\scripts\update-dashboard.ps1 -StartOnly
+```
+
+This opens the existing password-prompt workflow. Enter the broker password there, then refresh the browser with **Ctrl+F5**. Build, smoke-test, and launch temporary files stay on the project drive, so a full system-drive temp folder does not prevent EXE extraction. These are per-process settings only; Windows settings and existing launcher files are unchanged. The updater does not collect or save passwords and does not restart the live Dashboard automatically. A failure after shutdown can also leave the old Dashboard stopped; use `-StartOnly` to restart it.
+
+To roll back later, use the backup path printed by a successful update:
+
+```powershell
+.\scripts\update-dashboard.ps1 -ExecutablePath "<printed backup path>"
+```
+
+Backups and isolated build/test folders are kept for recovery and inspection. The updater does not delete user data or change services, startup tasks, firewall rules, or MQTT helpers.
+
 ### Advanced / source runs
 
 MQTT also auto-loads from `mqtt.json` next to `StatusVisualizer.exe`, or from `%LOCALAPPDATA%\StatusVisualizer\mqtt.json`. For source runs you can still set `STATUS_VISUALIZER_MQTT_CONFIG`. Broker outages do not block startup.

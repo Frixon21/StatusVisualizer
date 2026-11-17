@@ -313,6 +313,8 @@ def test_topology_has_persisted_packet_loss_heatmap_controls() -> None:
     assert 'id="heatmap-window"' in INDEX_HTML
     assert 'id="heatmap-show-healthy"' in INDEX_HTML
     assert 'id="heatmap-show-critical"' in INDEX_HTML
+    assert 'Critical (100% loss)' in INDEX_HTML
+    assert 'Critical (100% / offline)' not in INDEX_HTML
     assert 'id="heatmap-options"' in INDEX_HTML
     for window in ("5m", "15m", "1h", "12h", "24h"):
         assert f'<option value="{window}"' in INDEX_HTML
